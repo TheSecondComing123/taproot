@@ -1,6 +1,7 @@
 #include "cas.h"
 #include <ctype.h>
 #include <limits.h>
+#include <math.h>
 #include <setjmp.h>
 #include <string.h>
 
@@ -108,8 +109,9 @@ __attribute__((noreturn)) static void fail(const char *msg)
 
 static long long ckmul(long long a, long long b)
 {
-    long long r;
-    if (__builtin_mul_overflow(a, b, &r) || r == LLONG_MIN) fail("numbers too big");
+    /* __builtin_mul_overflow inlines ~2.9 kb of 64-bit code on the ez80 */
+    long long r = (long long)((unsigned long long)a * (unsigned long long)b);
+    if (r == LLONG_MIN || (a && r / a != b)) fail("numbers too big");
     return r;
 }
 
@@ -988,6 +990,651 @@ static void do_deriv(Poly *p)
     }
 }
 
+typedef struct { long long p, q; int mult; } Root;
+
+static Root roots[MAXD + 1];
+static int nroots;
+static long long ip[MAXD + 1];
+static int ideg;
+static long long dv0[256], dvn[256];
+static long long bqa[2], bqb[2];
+static int nbq;
+static long double zr[MAXD], zi[MAXD];
+static int nz;
+
+static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
+{
+    Poly *r;
+    long long g = 0, l = 1;
+    int i, v, show = 0;
+    for (v = 0; v < NV; v++) m[v] = MAXE;
+    for (i = 0; i < p->n; i++) {
+        g = gcd(g, p->t[i].c.n);
+        l = ckmul(l / gcd(l, p->t[i].c.d), p->t[i].c.d);
+        for (v = 0; v < NV; v++)
+            if (p->t[i].e[v] < m[v]) m[v] = p->t[i].e[v];
+    }
+    *k = qmake(p->t[0].c.n < 0 ? -g : g, l);
+    r = pnew();
+    for (i = 0; i < p->n; i++) {
+        uint8_t e[NV];
+        for (v = 0; v < NV; v++) e[v] = p->t[i].e[v] - m[v];
+        addterm(r, qdiv(p->t[i].c, *k), e);
+    }
+    for (v = 0; v < NV; v++) show |= m[v];
+    if (r->n > 1 && (show || k->n != 1 || k->d != 1)) {
+        begin(L_STEP);
+        wputs("GCF ");
+        wmono(*k, m, 1);
+        wputs(": ");
+        wpoly(r);
+        end();
+    }
+    return r;
+}
+
+static int intdense(const Poly *p, int v)
+{
+    int i, deg = todense(p, v, da);
+    for (i = 0; i <= deg; i++) ip[i] = da[i].n;
+    return deg;
+}
+
+static void wip(int v)
+{
+    int i;
+    Poly *p;
+    for (i = 0; i <= ideg; i++) da[i] = qint(ip[i]);
+    p = fromdense(da, ideg, v);
+    wpoly(p);
+    pfree(p);
+}
+
+static void wlinfactor(long long p, long long q, int v)
+{
+    uint8_t e[NV] = { 0 };
+    e[v] = 1;
+    wmono(qint(q), e, 1);
+    e[v] = 0;
+    if (p) wmono(qint(-p), e, 0);
+}
+
+static void sortll(long long *a, int n)
+{
+    int i, j;
+    for (i = 1; i < n; i++) {
+        long long t = a[i];
+        for (j = i; j > 0 && a[j - 1] > t; j--) a[j] = a[j - 1];
+        a[j] = t;
+    }
+}
+
+/* ponytail: trial division up to sqrt(n). constant terms past ~10^12 get slow on the calc */
+static int divisors(long long n, long long *out)
+{
+    long long j;
+    int k = 0;
+    if (n < 0) n = -n;
+    for (j = 1; j <= n / j; j++) {
+        if (n % j) continue;
+        if (k + 2 > 256) fail("too many divisors to test");
+        out[k++] = j;
+        if (j != n / j) out[k++] = n / j;
+    }
+    sortll(out, k);
+    return k;
+}
+
+static void add_root(long long p, long long q, int mult)
+{
+    int i;
+    for (i = 0; i < nroots; i++) {
+        if (roots[i].p == p && roots[i].q == q) {
+            roots[i].mult += mult;
+            return;
+        }
+    }
+    roots[nroots].p = p;
+    roots[nroots].q = q;
+    roots[nroots].mult = mult;
+    nroots++;
+}
+
+/* divides ip by (qx - p) when p/q is a root */
+static int try_root(long long p, long long q)
+{
+    static long long b[MAXD + 1];
+    long double r = (long double)p / q, sum = 0, scale = 0, pw = 1;
+    int k;
+    for (k = 0; k <= ideg; k++) {
+        sum += ip[k] * pw;
+        scale += fabsl(ip[k] * pw);
+        pw *= r;
+    }
+    if (fabsl(sum) > 1e-9L * scale) return 0;
+    b[ideg] = 0;
+    for (k = ideg; k >= 1; k--) {
+        long long t = ckadd(ip[k], ckmul(p, b[k]));
+        if (t % q) return 0;
+        b[k - 1] = t / q;
+    }
+    if (ckadd(ip[0], ckmul(p, b[0]))) return 0;
+    for (k = 0; k < ideg; k++) ip[k] = b[k];
+    ideg--;
+    return 1;
+}
+
+static void wcandidates(int n0, int nn)
+{
+    int i, j, count = 0;
+    for (i = 0; i < nn; i++)
+        for (j = 0; j < n0; j++) count += gcd(dv0[j], dvn[i]) == 1;
+    if (count > 4) {
+        wputs("none of them work");
+        return;
+    }
+    wputs("none of ");
+    for (i = 0; i < nn; i++) {
+        for (j = 0; j < n0; j++) {
+            if (gcd(dv0[j], dvn[i]) != 1) continue;
+            if (--count < 0) break;
+            wputs(G_PM);
+            wq(qmake(dv0[j], dvn[i]));
+            if (count) wputs(", ");
+        }
+    }
+    wputs(" work");
+}
+
+static void find_roots(int v)
+{
+    int i, j, sgn, n0, nn, found, any = 0;
+    if (ideg < 2) return;
+    begin(L_STEP);
+    wputs("rational roots " G_PM "p/q: p|");
+    wll(ip[0] < 0 ? -ip[0] : ip[0]);
+    wputs(", q|");
+    wll(ip[ideg]);
+    end();
+    while (ideg >= 2) {
+        found = 0;
+        n0 = divisors(ip[0], dv0);
+        nn = divisors(ip[ideg], dvn);
+        for (i = 0; i < nn && !found; i++) {
+            for (j = 0; j < n0 && !found; j++) {
+                if (gcd(dv0[j], dvn[i]) != 1) continue;
+                for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
+                    long long p = sgn * dv0[j], q = dvn[i];
+                    if (!try_root(p, q)) continue;
+                    found = any = 1;
+                    add_root(p, q, 1);
+                    begin(L_STEP);
+                    wputc(vars[v]);
+                    wputc('=');
+                    wq(qmake(p, q));
+                    wputs(": P(");
+                    wq(qmake(p, q));
+                    wputs(")=0, so (");
+                    wlinfactor(p, q, v);
+                    wputs(") is a factor");
+                    end();
+                    begin(L_STEP);
+                    wputs("divide by (");
+                    wlinfactor(p, q, v);
+                    wputs("): ");
+                    wip(v);
+                    end();
+                }
+            }
+        }
+        if (!found) break;
+    }
+    if (ideg == 1) {
+        add_root(-ip[0], ip[1], 1);
+        begin(L_STEP);
+        wputs("last factor: ");
+        wlinfactor(-ip[0], ip[1], v);
+        end();
+        ideg = 0;
+        ip[0] = 1;
+    } else if (!any) {
+        begin(L_STEP);
+        wcandidates(n0, nn);
+        end();
+    } else {
+        begin(L_STEP);
+        wputs("no more rational roots in ");
+        wip(v);
+        end();
+    }
+}
+
+static long long isqrt(long long n)
+{
+    long long r = (long long)sqrtl((long double)n);
+    while (r > 0 && r > n / r) r--;
+    while (r + 1 <= n / (r + 1)) r++;
+    return r;
+}
+
+/* ponytail: stops looking for square factors past 10^6, so huge discriminants may not fully simplify */
+static long long sqpart(long long n, long long *rest)
+{
+    long long s = 1, j;
+    for (j = 2; j <= n / j && j <= 1000000; j++) {
+        while (n % (j * j) == 0) {
+            n /= j * j;
+            s *= j;
+        }
+    }
+    *rest = n;
+    return s;
+}
+
+/* x^4 + ... with only even powers whose x^2-quadratic has rational roots */
+static int biquad(int v)
+{
+    long long a = ip[4], b = ip[2], c = ip[0], d, s;
+    int i;
+    Q u;
+    if (ideg != 4 || ip[1] || ip[3]) return 0;
+    d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
+    if (d < 0) return 0;
+    s = isqrt(d);
+    if (s * s != d) return 0;
+    begin(L_STEP);
+    wputs("only even powers, so treat it as a quadratic in ");
+    wputc(vars[v]);
+    wputs("^2");
+    end();
+    for (i = 0; i < 2; i++) {
+        u = qmake(ckadd(-b, i ? -s : s), ckmul(2, a));
+        bqa[i] = u.n;
+        bqb[i] = u.d;
+    }
+    if (fabsl((long double)bqa[0] / bqb[0]) > fabsl((long double)bqa[1] / bqb[1])) {
+        long long t = bqa[0];
+        bqa[0] = bqa[1];
+        bqa[1] = t;
+        t = bqb[0];
+        bqb[0] = bqb[1];
+        bqb[1] = t;
+    }
+    nbq = 2;
+    begin(L_STEP);
+    wip(v);
+    wputs(" = ");
+    for (i = 0; i < 2; i++) {
+        uint8_t e[NV] = { 0 };
+        e[v] = 2;
+        wputc('(');
+        wmono(qint(bqb[i]), e, 1);
+        e[v] = 0;
+        wmono(qint(-bqa[i]), e, 0);
+        wputc(')');
+    }
+    end();
+    ideg = 0;
+    ip[0] = 1;
+    return 1;
+}
+
+static void wld(long double x)
+{
+    long long n;
+    char frac[7];
+    int i, neg = x < 0;
+    if (neg) x = -x;
+    if (x >= 9e12L) fail("root too big to print");
+    n = (long long)(x * 1000000.0L + 0.5L);
+    if (neg && n) wputc('-');
+    wll(n / 1000000);
+    n %= 1000000;
+    if (!n) return;
+    for (i = 5; i >= 0; i--) {
+        frac[i] = '0' + n % 10;
+        n /= 10;
+    }
+    frac[6] = 0;
+    for (i = 5; frac[i] == '0'; i--) frac[i] = 0;
+    wputc('.');
+    wputs(frac);
+}
+
+static void wradical(long long num, long long k, long long r, int neg, long long den)
+{
+    int paren = den != 1 && num;
+    if (paren) wputc('(');
+    if (num) wll(num);
+    wputs(G_PM);
+    if (k != 1 || (!neg && r == 1)) wll(k);
+    if (neg) wputc('i');
+    if (r != 1) {
+        wputs(G_SQRT);
+        wll(r);
+    }
+    if (paren) wputc(')');
+    if (den != 1) {
+        wputc('/');
+        wll(den);
+    }
+}
+
+static void wparen(long long n)
+{
+    if (n < 0) wputc('(');
+    wll(n);
+    if (n < 0) wputc(')');
+}
+
+static void quad_steps(long long a, long long b, long long c)
+{
+    long long d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c))), r, s;
+    int neg = d < 0;
+    s = sqpart(neg ? -d : d, &r);
+    begin(L_STEP);
+    wputs("quadratic formula: a=");
+    wll(a);
+    wputs(", b=");
+    wll(b);
+    wputs(", c=");
+    wll(c);
+    end();
+    begin(L_STEP);
+    wputs("disc = ");
+    wparen(b);
+    wputs("^2-4(");
+    wll(a);
+    wputs(")(");
+    wll(c);
+    wputs(") = ");
+    wll(d);
+    end();
+    if (s != 1 || neg) {
+        begin(L_STEP);
+        wputs(G_SQRT);
+        wll(d);
+        wputs(" = ");
+        if (s != 1 || r == 1) wll(s);
+        if (neg) wputc('i');
+        if (r != 1) {
+            wputs(G_SQRT);
+            wll(r);
+        }
+        end();
+    }
+    if (gcd(gcd(b, s), 2 * a) != 1) {
+        begin(L_STEP);
+        wputs("x = ");
+        wradical(-b, s, r, neg, ckmul(2, a));
+        end();
+    }
+}
+
+static void quad_result(long long a, long long b, long long c, int v)
+{
+    long long d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c))), r, s, g;
+    long double re, im;
+    int neg = d < 0;
+    s = sqpart(neg ? -d : d, &r);
+    g = gcd(gcd(b, s), ckmul(2, a));
+    begin(L_RESULT);
+    wputc(vars[v]);
+    wputs(" = ");
+    wradical(-b / g, s / g, r, neg, 2 * a / g);
+    end();
+    if (r == 1) return;
+    re = (long double)-b / (2 * a);
+    im = sqrtl((long double)(neg ? -d : d)) / (2 * a);
+    begin(L_APPROX);
+    wputc(vars[v]);
+    wputs(" " G_APPROX " ");
+    if (neg) {
+        if (b) wld(re);
+        wputs(G_PM);
+        wld(im);
+        wputc('i');
+    } else if (!b) {
+        wputs(G_PM);
+        wld(im);
+    } else {
+        wld(re + im);
+        wputs(", ");
+        wld(re - im);
+    }
+    end();
+}
+
+static void numeric(void)
+{
+    static long double c[MAXD + 1];
+    long double tr, ti, pr, pi, dr, di, m, maxd, wr = 1, wi = 0;
+    int k, j, it, n = ideg;
+    for (k = 0; k <= n; k++) c[k] = (long double)ip[k] / ip[n];
+    for (k = 0; k < n; k++) {
+        zr[k] = wr;
+        zi[k] = wi;
+        tr = wr * 0.4L - wi * 0.9L;
+        wi = wr * 0.9L + wi * 0.4L;
+        wr = tr;
+    }
+    for (it = 0; it < 1000; it++) {
+        maxd = 0;
+        for (k = 0; k < n; k++) {
+            pr = 1;
+            pi = 0;
+            for (j = n - 1; j >= 0; j--) {
+                tr = pr * zr[k] - pi * zi[k] + c[j];
+                pi = pr * zi[k] + pi * zr[k];
+                pr = tr;
+            }
+            dr = 1;
+            di = 0;
+            for (j = 0; j < n; j++) {
+                long double ar = zr[k] - zr[j], ai = zi[k] - zi[j];
+                if (j == k) continue;
+                tr = dr * ar - di * ai;
+                di = dr * ai + di * ar;
+                dr = tr;
+            }
+            m = dr * dr + di * di;
+            if (m == 0) m = 1e-30L;
+            tr = (pr * dr + pi * di) / m;
+            ti = (pi * dr - pr * di) / m;
+            zr[k] -= tr;
+            zi[k] -= ti;
+            m = fabsl(tr) + fabsl(ti);
+            if (m > maxd) maxd = m;
+        }
+        if (maxd < 1e-15L) break;
+    }
+    nz = n;
+    for (k = 0; k < n; k++)
+        if (fabsl(zi[k]) < 1e-8L * (1 + fabsl(zr[k]))) zi[k] = 0;
+    for (k = 1; k < n; k++) {
+        long double a = zr[k], b = zi[k];
+        for (j = k; j > 0 && ((zi[j - 1] != 0) > (b != 0) || ((zi[j - 1] != 0) == (b != 0) && zr[j - 1] > a)); j--) {
+            zr[j] = zr[j - 1];
+            zi[j] = zi[j - 1];
+        }
+        zr[j] = a;
+        zi[j] = b;
+    }
+    begin(L_STEP);
+    wputs("no exact formula used for degree ");
+    wll(n);
+    wputs(", solving numerically");
+    end();
+}
+
+static void numeric_result(int v)
+{
+    int k;
+    for (k = 0; k < nz; k++) {
+        if (zi[k] < 0) continue;
+        begin(L_APPROX);
+        wputc(vars[v]);
+        wputs(" " G_APPROX " ");
+        wld(zr[k]);
+        if (zi[k] > 0) {
+            wputs(G_PM);
+            wld(zi[k]);
+            wputc('i');
+        }
+        end();
+    }
+}
+
+static void do_factor(Poly *p)
+{
+    Poly *r;
+    Q k;
+    uint8_t m[NV];
+    int v, i, pieces, paren, hasmono;
+    if (inexact_q) fail(FRAC);
+    if (!p->n) {
+        result("= ", p);
+        return;
+    }
+    r = gcf(p, &k, m);
+    v = univar(r);
+    ideg = 0;
+    if (v >= 0) {
+        ideg = intdense(r, v);
+        find_roots(v);
+        biquad(v);
+    }
+    pieces = nroots + nbq + (ideg >= 1) + (v == -2);
+    hasmono = hasvars(m) || k.n != 1 || k.d != 1;
+    paren = pieces > 1 || hasmono;
+    for (i = 0; i < nroots; i++) paren |= roots[i].mult > 1;
+    begin(L_RESULT);
+    wputs("= ");
+    if (!pieces || hasvars(m) || (k.d == 1 && k.n != 1 && k.n != -1)) {
+        wmono(k, m, 1);
+    } else if (k.n == -1 && k.d == 1) {
+        wputc('-');
+    } else if (k.d != 1) {
+        wputc('(');
+        wq(k);
+        wputc(')');
+    }
+    for (i = 0; i < nroots; i++) {
+        if (paren) wputc('(');
+        wlinfactor(roots[i].p, roots[i].q, v);
+        if (paren) wputc(')');
+        if (roots[i].mult > 1) {
+            wputc('^');
+            wll(roots[i].mult);
+        }
+    }
+    for (i = 0; i < nbq; i++) {
+        uint8_t e[NV] = { 0 };
+        e[v] = 2;
+        wputc('(');
+        wmono(qint(bqb[i]), e, 1);
+        e[v] = 0;
+        wmono(qint(-bqa[i]), e, 0);
+        wputc(')');
+    }
+    if (ideg >= 1) {
+        if (paren) wputc('(');
+        wip(v);
+        if (paren) wputc(')');
+    }
+    if (v == -2) {
+        if (paren) wputc('(');
+        wpoly(r);
+        if (paren) wputc(')');
+    }
+    end();
+    if (nassigned()) {
+        begin(L_RESULT);
+        wputs("at ");
+        wvalues();
+        wputs(": ");
+        wpoly(subst(p));
+        end();
+    }
+}
+
+static int rootcmp(const Root *a, const Root *b)
+{
+    long double x = (long double)a->p / a->q, y = (long double)b->p / b->q;
+    return x < y ? -1 : x > y;
+}
+
+static void do_solve(Poly *p)
+{
+    Poly *r;
+    Q k;
+    uint8_t m[NV];
+    int v, i, j, quad = 0;
+    if (inexact_q) fail(FRAC);
+    v = univar(p);
+    if (v == -2) fail("solve needs one variable");
+    if (v == -1) {
+        begin(L_RESULT);
+        wputs(p->n ? "no solution" : "every value works");
+        end();
+        return;
+    }
+    r = gcf(p, &k, m);
+    if (m[v]) {
+        add_root(0, 1, m[v]);
+        begin(L_STEP);
+        wputc(vars[v]);
+        if (m[v] > 1) {
+            wputc('^');
+            wll(m[v]);
+        }
+        wputs(" factor gives ");
+        wputc(vars[v]);
+        wputs("=0");
+        end();
+    }
+    ideg = intdense(r, v);
+    if (ideg == 1) {
+        add_root(-ip[0], ip[1], 1);
+        begin(L_STEP);
+        wip(v);
+        wputs("=0 gives ");
+        wputc(vars[v]);
+        wputc('=');
+        wq(qmake(-ip[0], ip[1]));
+        end();
+        ideg = 0;
+    }
+    find_roots(v);
+    if (ideg == 2) {
+        quad = 1;
+        quad_steps(ip[2], ip[1], ip[0]);
+    } else if (ideg >= 3 && !biquad(v)) {
+        numeric();
+    }
+
+    for (i = 1; i < nroots; i++) {
+        Root t = roots[i];
+        for (j = i; j > 0 && rootcmp(&roots[j - 1], &t) > 0; j--) roots[j] = roots[j - 1];
+        roots[j] = t;
+    }
+    for (i = 0; i < nroots; i++) {
+        begin(L_RESULT);
+        wputc(vars[v]);
+        wputs(" = ");
+        wq(qmake(roots[i].p, roots[i].q));
+        if (roots[i].mult > 1) {
+            wputs(" (multiplicity ");
+            wll(roots[i].mult);
+            wputc(')');
+        }
+        end();
+    }
+    if (quad) quad_result(ip[2], ip[1], ip[0], v);
+    for (i = 0; i < nbq; i++) quad_result(bqb[i], 0, -bqa[i], v);
+    numeric_result(v);
+}
+
 void cas_run(int cmd, const char *input)
 {
     const char *part[NV + 1], *pend[NV + 1], *eq = 0, *p;
@@ -998,6 +1645,7 @@ void cas_run(int cmd, const char *input)
     textlen = 0;
     hidden = 0;
     nv = 0;
+    nroots = nbq = nz = 0;
     inexact_q = inexact_r = inexact_d = 0;
     memset(assigned, 0, sizeof assigned);
     for (i = 0; i < POOL; i++) pool[i].used = 0;
@@ -1025,10 +1673,23 @@ void cas_run(int cmd, const char *input)
     for (i = 1; i <= cur; i++) parse_value(part[i], pend[i]);
     if (cmd == CMD_SOLVE && cur) fail("solve finds the values itself, drop the , x=");
     if (eq && cmd != CMD_SOLVE) fail("use solve for equations");
-    if (cmd == CMD_FACTOR) fail("factor isn't built yet");
-    if (cmd == CMD_SOLVE) fail("solve isn't built yet");
 
-    poly = parse(part[0], pend[0]);
+    poly = parse(part[0], eq ? eq : pend[0]);
+    if (eq) {
+        Poly *lhs = poly, *rhs = parse(eq + 1, pend[0]);
+        poly = padd(lhs, rhs, 1);
+        if (rhs->n) {
+            begin(L_STEP);
+            wputs("move everything to one side: ");
+            wpoly(poly);
+            wputs("=0");
+            end();
+        }
+        pfree(lhs);
+        pfree(rhs);
+    }
     if (cmd == CMD_EXPAND) do_expand(poly);
+    else if (cmd == CMD_FACTOR) do_factor(poly);
+    else if (cmd == CMD_SOLVE) do_solve(poly);
     else do_deriv(poly);
 }
