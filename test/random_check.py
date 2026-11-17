@@ -3,12 +3,12 @@ import re
 import subprocess
 import sys
 
-from sympy import Mul, Poly, Pow, Rational, diff, div, expand, factor_list, sqf_list, symbols
+from sympy import Mul, Poly, Pow, Rational, diff, div, expand, factor_list, nan, simplify, solveset, sqf_list, symbols, zoo, S
 from sympy.parsing.sympy_parser import implicit_multiplication_application, parse_expr, standard_transformations
 
 x, y = symbols("x y")
 TR = standard_transformations + (implicit_multiplication_application,)
-GLYPHS = {"\x01": "√", "\x02": "±", "\x03": "≈", "\x04": "·"}
+GLYPHS = {"\x01": "√", "\x02": "±", "\x03": "≈", "\x04": "·", "\x11": "≠", "\x12": "≤", "\x13": "≥", "\x14": "∞", "\x15": "∪", "\x16": "→"}
 
 
 def ours(s):
@@ -27,6 +27,8 @@ def run(cases):
     stdin = "".join(f"{c}\t{inp}\n" for c, inp, _ in cases)
     out = subprocess.run([sys.argv[1], "-r"], input=stdin.encode(), capture_output=True, check=True).stdout.decode()
     blocks = out.split("--\n")[:-1]
+    if len(blocks) != len(cases):
+        sys.exit(f"runner gave {len(blocks)} results for {len(cases)} cases")
     for raw in blocks:
         lines = []
         for ln in raw.splitlines():
@@ -114,6 +116,76 @@ def gen_numeric():
     return p
 
 
+def endpoint(t):
+    if t in ("∞", "-∞"):
+        return float("inf") if t == "∞" else float("-inf")
+    return float(numbers(t)[0].evalf())
+
+
+def intervals(line):
+    """our interval notation as (lo, hi, lo_closed, hi_closed) pieces"""
+    if line in ("no solution",):
+        return []
+    out = []
+    for piece in line.split(" ∪ "):
+        if piece.startswith("{"):
+            v = endpoint(piece[1:-1])
+            out.append((v, v, True, True))
+            continue
+        lo, hi = piece[1:-1].split(",")
+        out.append((endpoint(lo), endpoint(hi), piece[0] == "[", piece[-1] == "]"))
+    return out
+
+
+def inside(pieces, xv):
+    for lo, hi, lc, hc in pieces:
+        if (lo < xv or (lc and abs(lo - xv) < 1e-12)) and (xv < hi or (hc and abs(hi - xv) < 1e-12)):
+            return True
+    return False
+
+
+def gen_inequality():
+    p = 1
+    for _ in range(random.randint(1, 4)):
+        r = rand_root()
+        p *= (x - r) ** random.choice([1, 1, 2])
+    if random.random() < 0.3:
+        p *= x**2 + random.randint(1, 5)
+    num = expand(p * random.choice([1, -1, 2]))
+    den = 1
+    if random.random() < 0.4:
+        den = x - rand_root()
+    return num, den, random.choice(["<", ">", "<=", ">="])
+
+
+def check_inequality(num, den, rel, lines):
+    res = [t for k, t in lines if k == 1]
+    if not res:
+        return False, "no result"
+    if res[0] == "all real numbers":
+        pieces = [(float("-inf"), float("inf"), False, False)]
+    else:
+        pieces = intervals(res[0])
+    f = num / den
+    pts = set()
+    for r in list(Poly(num, x).real_roots()) + (list(Poly(den, x).real_roots()) if den != 1 else []):
+        pts.add(r)
+    probes = []
+    for r in pts:
+        rv = float(r.evalf())
+        probes += [(r, rv), (None, rv - 1e-5), (None, rv + 1e-5)]
+    probes += [(None, -1e3), (None, 1e3), (None, 0.123)]
+    for exact, xv in probes:
+        val = f.subs(x, exact) if exact is not None else f.subs(x, Rational(xv))
+        if val.has(zoo) or val is nan or (den != 1 and (den.subs(x, exact if exact is not None else Rational(xv)) == 0)):
+            truth = False
+        else:
+            truth = {"<": val < 0, ">": val > 0, "<=": val <= 0, ">=": val >= 0}[rel]
+        if bool(truth) != inside(pieces, xv):
+            return False, f"at x={xv}: truth {truth}, ours {inside(pieces, xv)} from {res[0]}"
+    return True, ""
+
+
 def same_roots(a, b):
     b = list(b)
     for r in a:
@@ -141,6 +213,12 @@ def main():
         den = x - random.randint(-5, 5) if random.random() < 0.5 else random.randint(1, 3) * x**2 + random.randint(-3, 3) * x + 1
         if num.as_poly(x).degree() >= den.as_poly(x).degree():
             cases.append(("e", f"({to_input(num)})/({to_input(den)})", (num, den)))
+        inum, iden, rel = gen_inequality()
+        cases.append(("s", f"({to_input(inum)})/({to_input(iden)}){rel}0" if iden != 1 else f"{to_input(inum)}{rel}0", ("ineq", inum, iden, rel)))
+        a1, a2 = rand_root(), rand_root()
+        lhs_s = f"({to_input(x - a1)})/({to_input(x - a2)})+({random.randint(-3, 3)})"
+        rhs_s = f"({random.randint(1, 3)})/({to_input(x - a2)})+({random.randint(-2, 2)})x"
+        cases.append(("s", f"{lhs_s}={rhs_s}", ("rateq", parse(lhs_s), parse(rhs_s))))
 
     bad = sensitive = 0
     for (cmd, inp, ref), lines in zip(cases, run(cases)):
@@ -161,6 +239,14 @@ def main():
                     fl = factor_list(base)[1]
                     if base.free_symbols and (len(fl) != 1 or fl[0][1] != 1):
                         ok, why = False, f"reducible factor {base}"
+        elif cmd == "s" and isinstance(ref, tuple) and ref[0] == "ineq":
+            ok, why = check_inequality(ref[1], ref[2], ref[3], lines)
+        elif cmd == "s" and isinstance(ref, tuple) and ref[0] == "rateq":
+            sol = solveset(ref[1] - ref[2], x, domain=S.Complexes)
+            want = [complex(v.evalf()) for v in sol]
+            got, _ = solutions(lines)
+            ok = got is not None and same_roots(sorted(set(got), key=lambda c: (c.real, c.imag)), want)
+            why = f"got {got} want {want}"
         elif cmd == "s":
             got, _ = solutions(lines)
             want = reference_roots(ref)
@@ -174,8 +260,10 @@ def main():
             if r == 0:
                 ok = expand(parse(res[0][2:]) - q) == 0
             else:
-                gq, gr = res[0][2:].split(", remainder ")
-                ok = expand(parse(gq) - q) == 0 and expand(parse(gr) - r) == 0
+                # after any cancelling, "= q+r/D" must still equal num/den
+                mixed_line = next(t for t in res[1:] if t.startswith("= "))
+                ok = simplify(parse(mixed_line[2:]) - num / den) == 0
+                why = mixed_line
         elif cmd == "d":
             ok = expand(parse(res[0][2:]) - diff(ref, x)) == 0
         if not ok:
