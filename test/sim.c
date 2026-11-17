@@ -5,10 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef CW
-#define CW 8
-#endif
-
 uint16_t sim_palette[256];
 
 #define MAXOPS 20000
@@ -35,7 +31,7 @@ static void op(char kind, int x, int y, int w, int h, int c)
 
 void gfx_Begin(void) {}
 void gfx_End(void) {}
-uint8_t *gfx_SetCharData(uint8_t index, const uint8_t *data) { (void)index; (void)data; return 0; }
+uint8_t *gfx_SetFontData(const uint8_t *data) { (void)data; return 0; }
 static int mono = 8;
 void gfx_SetMonospaceFont(uint8_t spacing) { mono = spacing; }
 uint8_t gfx_SetTextTransparentColor(uint8_t c) { return c; }
@@ -185,7 +181,7 @@ static int busy(void)
 {
     int i;
     for (i = 0; i < nshown; i++)
-        if (shown[i].kind == 'C' && shown[i].y == 2 && shown[i].x == 4 + 9 * CW) return shown[i].c == 'w';
+        if (shown[i].kind == 'C' && shown[i].y == 2 && shown[i].x == 4 + 9 * mono) return shown[i].c == 'w';
     return 0;
 }
 

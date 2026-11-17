@@ -11,7 +11,7 @@ extern uint16_t sim_palette[256];
 void gfx_Begin(void);
 void gfx_End(void);
 void gfx_SwapDraw(void);
-uint8_t *gfx_SetCharData(uint8_t index, const uint8_t *data);
+uint8_t *gfx_SetFontData(const uint8_t *data);
 void gfx_SetMonospaceFont(uint8_t spacing);
 uint8_t gfx_SetTextTransparentColor(uint8_t color);
 uint8_t gfx_SetTextBGColor(uint8_t color);

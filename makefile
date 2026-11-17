@@ -20,7 +20,7 @@ check:
 
 SIMFLAGS = -std=c99 -Wall -Wextra -g -fsanitize=address,undefined -I test/host -idirafter $(shell cedev-config --prefix)/include
 
-obj/sim/run: src/main.c src/cas.c src/cas.h test/sim.c test/host/graphx.h test/host/real.c test/host/ti/real.h test/host/ti/error.h
+obj/sim/run: src/main.c src/cas.c src/cas.h src/font.h test/sim.c test/host/graphx.h test/host/real.c test/host/ti/real.h test/host/ti/error.h
 	mkdir -p obj/sim
 	cc $(SIMFLAGS) -Dmain=sim_main -c src/main.c -o obj/sim/main.o
 	cc $(SIMFLAGS) -c src/cas.c -o obj/sim/cas.o
