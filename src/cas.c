@@ -1681,15 +1681,20 @@ static void add_root(int32_t p, int32_t q, int mult)
     nroots++;
 }
 
-/* P(1) or P(-1), or 0 when it doesn't fit */
-static int psum(int sgn, int32_t *out)
+/* P(1) or P(-1), or 0 when it doesn't fit, which filters nothing */
+static int32_t psum(int sgn)
 {
     int32_t t = 0;
     int k;
     for (k = 0; k <= ideg; k++)
         if (__builtin_add_overflow(t, sgn < 0 && (k & 1) ? -ip[k] : ip[k], &t)) return 0;
-    *out = t;
-    return 1;
+    return t;
+}
+
+/* d doesn't divide a, where only 0 divides 0 */
+static int nodiv(int32_t a, int32_t d)
+{
+    return d ? a % d != 0 : a != 0;
 }
 
 /* divides ip by (qx - p) when p/q is a root */
@@ -1742,12 +1747,10 @@ static void wcandidates(int n0, int nn)
 
 static void find_roots(int v)
 {
-    int i, j, sgn, n0 = 0, nn = 0, found, any = 0, h1, hm;
+    int i, j, sgn, n0 = 0, nn = 0, found, any = 0, ch = vars[v];
     int32_t p1, pm1, bound;
     if (ideg < 2) return;
-    begin(L_STEP);
-    wputs("rational roots " G_PM "p/q: p|");
-    say(MORE, "%l, q|%l", ip[0] < 0 ? -ip[0] : ip[0], ip[ideg]);
+    say(L_STEP, "rational roots " G_PM "p/q: p|%l, q|%l", ip[0] < 0 ? -ip[0] : ip[0], ip[ideg]);
     while (ideg >= 2) {
         found = 0;
         n0 = divisors(ip[0], dv0);
@@ -1761,29 +1764,21 @@ static void find_roots(int v)
             int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
             if (c > bound) bound = c;
         }
-        h1 = psum(1, &p1);
-        hm = psum(-1, &pm1);
+        p1 = psum(1);
+        pm1 = psum(-1);
         for (i = 0; i < nn && !found; i++) {
             for (j = 0; j < n0 && !found; j++) {
                 if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
                 for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
                     int32_t p = sgn * dv0[j], q = dvn[i];
-                    if (h1 && (q == p ? p1 != 0 : p1 % (q - p) != 0)) continue;
-                    if (hm && (q == -p ? pm1 != 0 : pm1 % (q + p) != 0)) continue;
+                    Q r = { p, q }, m = { q, 1 }, b = { -p, 1 };
+                    if (nodiv(p1, q - p) || nodiv(pm1, q + p)) continue;
                     poll();
                     if (!try_root(p, q)) continue;
                     found = any = 1;
                     add_root(p, q, 1);
-                    say(L_STEP | OPEN, "%c=", vars[v]);
-                    wfrac(p, q);
-                    wputs(": P(");
-                    wfrac(p, q);
-                    wputs(")=0, so (");
-                    wlinfactor(p, q, v);
-                    say(MORE, ") is a factor");
-                    say(L_STEP | OPEN, "divide by (");
-                    wlinfactor(p, q, v);
-                    wputs("): ");
+                    say(L_STEP, "%c=%q: P(%q)=0, so (%L) is a factor", ch, &r, &r, &m, ch, &b);
+                    say(L_STEP | OPEN, "divide by (%L): ", &m, ch, &b);
                     wip(v);
                     end();
                 }
@@ -1792,10 +1787,9 @@ static void find_roots(int v)
         if (!found) break;
     }
     if (ideg == 1) {
+        Q m = { ip[1], 1 }, b = { ip[0], 1 };
         add_root(-ip[0], ip[1], 1);
-        say(L_STEP | OPEN, "last factor: ");
-        wlinfactor(-ip[0], ip[1], v);
-        end();
+        say(L_STEP, "last factor: %L", &m, ch, &b);
         ideg = 0;
         ip[0] = 1;
     } else if (!any) {
