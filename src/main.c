@@ -17,11 +17,13 @@ enum { C_BASE, C_MANTLE, C_CRUST, C_SURF, C_OVER, C_DIM, C_TEXT, C_SUB, C_BLUE, 
 enum { M_NONE, M_2ND, M_ALPHA, M_LOCK };
 enum { BOLD = 1, PRETTY = 2 };
 
-static const uint8_t rgb[][3] = {
-    { 0x1e, 0x1e, 0x2e }, { 0x18, 0x18, 0x25 }, { 0x11, 0x11, 0x1b }, { 0x31, 0x32, 0x44 }, { 0x6c, 0x70, 0x86 },
-    { 0x93, 0x99, 0xb2 }, { 0xcd, 0xd6, 0xf4 }, { 0xa6, 0xad, 0xc8 }, { 0x89, 0xb4, 0xfa }, { 0xfa, 0xb3, 0x87 },
-    { 0xa6, 0xe3, 0xa1 }, { 0xcb, 0xa6, 0xf7 }, { 0x94, 0xe2, 0xd5 }, { 0xf3, 0x8b, 0xa8 }, { 0xf9, 0xe2, 0xaf },
-    { 0xf5, 0xc2, 0xe7 }, { 0x89, 0xdc, 0xeb }, { 0xeb, 0xa0, 0xac },
+static const uint16_t palette[] = {
+    gfx_RGBTo1555(0x1e, 0x1e, 0x2e), gfx_RGBTo1555(0x18, 0x18, 0x25), gfx_RGBTo1555(0x11, 0x11, 0x1b),
+    gfx_RGBTo1555(0x31, 0x32, 0x44), gfx_RGBTo1555(0x6c, 0x70, 0x86), gfx_RGBTo1555(0x93, 0x99, 0xb2),
+    gfx_RGBTo1555(0xcd, 0xd6, 0xf4), gfx_RGBTo1555(0xa6, 0xad, 0xc8), gfx_RGBTo1555(0x89, 0xb4, 0xfa),
+    gfx_RGBTo1555(0xfa, 0xb3, 0x87), gfx_RGBTo1555(0xa6, 0xe3, 0xa1), gfx_RGBTo1555(0xcb, 0xa6, 0xf7),
+    gfx_RGBTo1555(0x94, 0xe2, 0xd5), gfx_RGBTo1555(0xf3, 0x8b, 0xa8), gfx_RGBTo1555(0xf9, 0xe2, 0xaf),
+    gfx_RGBTo1555(0xf5, 0xc2, 0xe7), gfx_RGBTo1555(0x89, 0xdc, 0xeb), gfx_RGBTo1555(0xeb, 0xa0, 0xac),
 };
 
 /* the four keys under the screen, then the same keys after 2nd, then graph's key help */
@@ -77,7 +79,7 @@ static int cur, mode, last, shown = -1, scroll, nhist, hpos, ans_long;
 static uint8_t pending;
 static const char **lines;
 static const uint8_t *kinds;
-static int nout;
+static int nout, vis;
 static const char *msg;
 
 /* one byte per pixel row, bit 0 on the left: testing bit 0 compiles to one instruction, bit 7 to a signed compare */
@@ -132,11 +134,6 @@ static int input_rows(void)
 {
     int r = strlen(in) / PER + 1;
     return r > 3 ? 3 : r;
-}
-
-static int out_top(void)
-{
-    return input_rows() * RH + 13;
 }
 
 /* walks every wrapped output row, answers first, then a divider and the steps; draws the visible
@@ -196,7 +193,9 @@ static void hint(int y)
 
 static void draw(void)
 {
-    int r, rows = input_rows(), top = out_top(), vis = (BAR - 4 - top) / RH, total, i;
+    int r, rows = input_rows(), top = rows * RH + 13, total, i;
+
+    vis = (BAR - 4 - top) / RH;
 
     gfx_FillScreen(C_BASE);
     gfx_SetColor(C_MANTLE);
@@ -342,12 +341,11 @@ static void relation(void)
 int main(void)
 {
     char ch[2] = { 0, 0 };
-    int i, page;
-    uint8_t k;
+    uint8_t k, m, f;
 
     gfx_Begin();
     gfx_SetDrawBuffer();
-    for (i = 0; i < (int)(sizeof rgb / sizeof *rgb); i++) gfx_palette[i] = gfx_RGBTo1555(rgb[i][0], rgb[i][1], rgb[i][2]);
+    memcpy(gfx_palette, palette, sizeof palette);
     cas_stop = stop;
 
     for (;;) {
@@ -356,7 +354,6 @@ int main(void)
         pending = 0;
         while (!k) k = os_GetCSC();
         msg = 0;
-        page = (BAR - 4 - out_top()) / RH;
 
         if (k == sk_2nd) {
             mode = mode == M_2ND ? M_NONE : M_2ND;
@@ -366,16 +363,20 @@ int main(void)
             mode = mode == M_2ND ? M_LOCK : mode ? M_NONE : M_ALPHA;
             continue;
         }
-        if (mode == M_ALPHA || mode == M_LOCK) {
-            if (mode == M_ALPHA) mode = M_NONE;
-            if (k < sizeof alpha && alpha[k]) {
-                ch[0] = alpha[k];
-                insert(ch);
-                continue;
-            }
+        m = mode;
+        if (m != M_LOCK) mode = M_NONE;
+        if (m >= M_ALPHA && k < sizeof alpha && alpha[k]) {
+            ch[0] = alpha[k];
+            insert(ch);
+            continue;
         }
-        if (mode == M_2ND) {
-            mode = M_NONE;
+        /* y= window zoom trace are scan codes counting down */
+        f = sk_Yequ - k;
+        if (f < 4) {
+            run(m == M_2ND ? f + CMD_VERTEX : f);
+            continue;
+        }
+        if (m == M_2ND) {
             if (k == sk_Mode) break;
             if (k == sk_Math) {
                 relation();
@@ -383,10 +384,6 @@ int main(void)
             }
             if (k == sk_DecPnt) {
                 insert("i");
-                continue;
-            }
-            if (k == sk_Yequ || k == sk_Window || k == sk_Zoom || k == sk_Trace) {
-                run(k == sk_Yequ ? CMD_VERTEX : k == sk_Window ? CMD_ZEROS : k == sk_Zoom ? CMD_SYSTEM : CMD_INVERSE);
                 continue;
             }
             if (k == sk_Enter) {
@@ -399,16 +396,12 @@ int main(void)
             }
             if (k == sk_Left) cur = 0;
             else if (k == sk_Right) cur = strlen(in);
-            else if (k == sk_Up) scroll -= page;
-            else if (k == sk_Down) scroll += page;
+            else if (k == sk_Up) scroll -= vis;
+            else if (k == sk_Down) scroll += vis;
             else if (k != sk_Graph) msg = "2nd + key not used";
             if (k != sk_Graph) continue;
         }
         switch (k) {
-        case sk_Yequ: run(CMD_EXPAND); break;
-        case sk_Window: run(CMD_FACTOR); break;
-        case sk_Zoom: run(CMD_SOLVE); break;
-        case sk_Trace: run(CMD_DERIV); break;
         case sk_Graph:
             lines = help;
             kinds = help_kind;
