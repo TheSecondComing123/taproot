@@ -1747,9 +1747,9 @@ static void find_roots(int v)
         pm1 = psum(-1);
         for (i = 0; i < nn; i++) {
             for (j = 0; j < n0; j++) {
-                if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
-                for (sgn = 0; sgn < 2; sgn++) {
-                    int32_t p = sgn ? -dv0[j] : dv0[j], q = dvn[i];
+                int32_t p = dv0[j], q = dvn[i];
+                if (p / q > bound || gcd(p, q) != 1) continue;
+                for (sgn = 0; sgn < 2; sgn++, p = -p) {
                     Q r = { p, q }, m = { q, 1 }, b = { -p, 1 };
                     if ((q == p ? p1 : p1 % (q - p)) || (q == -p ? pm1 : pm1 % (q + p))) continue;
                     poll();
@@ -1839,17 +1839,20 @@ static void swap2(int32_t *a)
 /* x^4 + ... with only even powers whose x^2-quadratic has rational roots */
 static int biquad(int v)
 {
-    int32_t a = ip[4], b = ip[2], c = ip[0], d, sq;
+    int32_t a, b, d, sq;
     int i;
     Q u;
     if (ideg != 4 || ip[1] || ip[3]) return 0;
-    d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
+    a = ip[4];
+    b = ip[2];
+    d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, ip[0])));
     if (d < 0) return 0;
     sq = isqrt(d);
     if (sq * sq != d) return 0;
     say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
-    for (i = 0; i < 2; i++) {
-        qnorm(&u, ckadd(-b, i ? -sq : sq), ckmul(2, a));
+    a = ckmul(2, a);
+    for (i = 0; i < 2; i++, sq = -sq) {
+        qnorm(&u, ckadd(-b, sq), a);
         bqa[i] = u.n;
         bqb[i] = u.d;
     }
@@ -1857,8 +1860,8 @@ static int biquad(int v)
         swap2(bqa);
         swap2(bqb);
     }
-    nbq = sq ? 2 : 1;
-    bqmult = sq ? 1 : 2;
+    nbq = 1 + !!sq;
+    bqmult = 3 - nbq;
     begin(L_STEP);
     wip(v);
     wputs(" = ");
