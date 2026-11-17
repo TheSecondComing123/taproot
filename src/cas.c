@@ -18,16 +18,16 @@
 #define STEP_TEXT (TEXT - 2048)
 #define MAXPTS (2 * MAXD + 8)
 
-typedef struct { long long n, d; } Q;
+typedef struct { int32_t n, d; } Q;
 typedef struct { Q c; uint8_t e[NV]; } Term;
 typedef struct { uint8_t used; int n; Term t[MAXT]; } Poly;
 typedef struct { Poly *n, *d; } Rat; /* d == 0 means 1 */
 /* floating point is the os's 14-digit bcd reals: the routines live in rom, so the program carries none */
 typedef real_t R;
 typedef struct { R r, i; } Cx;
-typedef struct { long long p, q; int mult; } Root;
+typedef struct { int32_t p, q; int mult; } Root;
 /* a real point on the number line: a zero of the top ('n'), of the bottom ('d') or a hole ('h') */
-typedef struct { R v; long long p, q; int mult; char tag; const char *s; } Pt;
+typedef struct { R v; int32_t p, q; int mult; char tag; const char *s; } Pt;
 
 const char *cas_line[CAS_MAXLINES];
 uint8_t cas_kind[CAS_MAXLINES];
@@ -70,11 +70,11 @@ static void wputs(const char *p)
     while (*p) wputc(*p++);
 }
 
-static void wll(long long v)
+static void wll(int32_t v)
 {
     char tmp[24];
     int n = 0;
-    unsigned long long u = v < 0 ? -(unsigned long long)v : (unsigned long long)v;
+    uint32_t u = v < 0 ? -(uint32_t)v : (uint32_t)v;
     do tmp[n++] = '0' + u % 10; while (u /= 10);
     if (v < 0) wputc('-');
     while (n) wputc(tmp[--n]);
@@ -128,7 +128,7 @@ static void wreal(const R *x);
 #define MORE 16
 
 /* one call per output line instead of a run of w* calls: begin a line of this kind (| MORE keeps
-   writing the open one), write f with %s %c %d(int) %l(long long) %q %Q(Q *) %p(Poly *) %r(Rat)
+   writing the open one), write f with %s %c %d(int) %l(int32_t) %q %Q(Q *) %p(Poly *) %r(Rat)
    %R(R *), then end it (| OPEN leaves it open) */
 static void say(int kind, const char *f, ...)
 {
@@ -144,7 +144,7 @@ static void say(int kind, const char *f, ...)
         case 's': wputs(va_arg(ap, const char *)); break;
         case 'c': wputc(va_arg(ap, int)); break;
         case 'd': wll(va_arg(ap, int)); break;
-        case 'l': wll(va_arg(ap, long long)); break;
+        case 'l': wll(va_arg(ap, int32_t)); break;
         case 'q': wq(va_arg(ap, const Q *)); break;
         case 'Q': wqpar(va_arg(ap, const Q *)); break;
         case 'p': wpoly(va_arg(ap, const Poly *)); break;
@@ -187,57 +187,51 @@ static void poll(void)
 
 /* ---------- exact rationals ---------- */
 
-/* out of line so the compiler can't spot the divide-back overflow test and turn it into ~2.9 kb of inline code */
-__attribute__((noinline)) static unsigned long long udiv(unsigned long long a, unsigned long long b)
+static int32_t ckmul(int32_t a, int32_t b)
 {
-    return a / b;
-}
-
-static long long ckmul(long long a, long long b)
-{
-    unsigned long long ua, ub;
-    if ((unsigned long long)a + 0x7fffffff < 0xffffffffULL && (unsigned long long)b + 0x7fffffff < 0xffffffffULL) return a * b;
-    ua = a < 0 ? -(unsigned long long)a : (unsigned long long)a;
-    ub = b < 0 ? -(unsigned long long)b : (unsigned long long)b;
-    if (ua && ub > udiv(LLONG_MAX, ua)) too_big();
+    uint32_t ua, ub;
+    if ((uint32_t)a + 46340 <= 92680 && (uint32_t)b + 46340 <= 92680) return a * b;
+    ua = a < 0 ? -(uint32_t)a : (uint32_t)a;
+    ub = b < 0 ? -(uint32_t)b : (uint32_t)b;
+    if (ua && ub > INT32_MAX / ua) too_big();
     return a * b;
 }
 
-static long long ckadd(long long a, long long b)
+static int32_t ckadd(int32_t a, int32_t b)
 {
-    long long r;
-    if (__builtin_add_overflow(a, b, &r) || r == LLONG_MIN) too_big();
+    int32_t r;
+    if (__builtin_add_overflow(a, b, &r) || r == INT32_MIN) too_big();
     return r;
 }
 
-static long long gcd(long long a, long long b)
+static int32_t gcd(int32_t a, int32_t b)
 {
     if (a < 0) a = -a;
     if (b < 0) b = -b;
     while (b) {
-        long long t = a % b;
+        int32_t t = a % b;
         a = b;
         b = t;
     }
     return a;
 }
 
-static long long lcm(long long a, long long b)
+static int32_t lcm(int32_t a, int32_t b)
 {
     return ckmul(a / gcd(a, b), b);
 }
 
 /* fractions go by pointer: a 16-byte struct copied by value costs ~3x the code on the ez80.
    r may be the same as a or b */
-static void qset(Q *r, long long n)
+static void qset(Q *r, int32_t n)
 {
     r->n = n;
     r->d = 1;
 }
 
-static void qnorm(Q *r, long long n, long long d)
+static void qnorm(Q *r, int32_t n, int32_t d)
 {
-    long long g;
+    int32_t g;
     if (d == 0) fail("division by zero");
     if (d < 0) {
         n = -n;
@@ -250,7 +244,7 @@ static void qnorm(Q *r, long long n, long long d)
 
 static void qadd(Q *r, const Q *a, const Q *b)
 {
-    long long g = gcd(a->d, b->d);
+    int32_t g = gcd(a->d, b->d);
     qnorm(r, ckadd(ckmul(a->n, b->d / g), ckmul(b->n, a->d / g)), ckmul(a->d / g, b->d));
 }
 
@@ -263,7 +257,7 @@ static void qsub(Q *r, const Q *a, const Q *b)
 
 static void qmul(Q *r, const Q *a, const Q *b)
 {
-    long long g1 = gcd(a->n, b->d), g2 = gcd(b->n, a->d);
+    int32_t g1 = gcd(a->n, b->d), g2 = gcd(b->n, a->d);
     qnorm(r, ckmul(a->n / g1, b->n / g2), ckmul(a->d / g2, b->d / g1));
 }
 
@@ -296,7 +290,7 @@ static void wq(const Q *a)
 }
 
 /* n/d reduced */
-static void wfrac(long long n, long long d)
+static void wfrac(int32_t n, int32_t d)
 {
     Q t;
     qnorm(&t, n, d);
@@ -334,32 +328,22 @@ static void xmul(R *r, const R *a, const R *b) { *r = os_RealMul(a, b); }
 static void xdiv(R *r, const R *a, const R *b) { *r = os_RealDiv(a, b); }
 static void xsqrt(R *r, const R *a) { *r = os_RealSqrt(a); }
 
-/* v as a real: exact up to 14 digits, rounded past that */
-static void rset(R *r, long long v)
+/* v as a real, exact: 10 digits fit the 14-digit mantissa */
+static void rset(R *r, int32_t v)
 {
-    unsigned long long u = v < 0 ? -(unsigned long long)v : (unsigned long long)v;
-    uint8_t d[20];
-    int n = 0, i, e;
+    uint32_t u = v < 0 ? -(uint32_t)v : (uint32_t)v;
+    uint8_t d[10];
+    int n = 0, i;
     memset(r, 0, sizeof *r);
     r->exp = (int8_t)0x80;
     if (!u) return;
     do d[n++] = u % 10; while (u /= 10);
-    e = n - 1;
-    if (n > 14 && d[n - 15] >= 5) {
-        for (i = n - 14; i < n && d[i] == 9; i++) d[i] = 0;
-        if (i == n) {
-            d[n - 1] = 1;
-            e++;
-        } else {
-            d[i]++;
-        }
-    }
-    for (i = 0; i < 14 && i < n; i++) r->mant[i / 2] |= d[n - 1 - i] << (i & 1 ? 0 : 4);
-    r->exp = (int8_t)(0x80 + e);
+    for (i = 0; i < n; i++) r->mant[i / 2] |= d[n - 1 - i] << (i & 1 ? 0 : 4);
+    r->exp = (int8_t)(0x80 + n - 1);
     if (v < 0) r->sign = (int8_t)0x80;
 }
 
-static void rfrac(R *r, long long n, long long d)
+static void rfrac(R *r, int32_t n, int32_t d)
 {
     R b;
     rset(r, n);
@@ -442,7 +426,7 @@ static void wmono(const Q *c0, const uint8_t *e, int first)
 }
 
 /* a whole-number coefficient, for the many places that build terms from integers */
-static void wmonoi(long long n, const uint8_t *e, int first)
+static void wmonoi(int32_t n, const uint8_t *e, int first)
 {
     Q c;
     qset(&c, n);
@@ -520,7 +504,7 @@ static void pfree(Poly *p)
     if (p) p->used = 0;
 }
 
-static void addtermi(Poly *p, long long n, const uint8_t *e)
+static void addtermi(Poly *p, int32_t n, const uint8_t *e)
 {
     Q c;
     qset(&c, n);
@@ -535,7 +519,7 @@ static Poly *pconst(const Q *c)
     return p;
 }
 
-static Poly *pconsti(long long n)
+static Poly *pconsti(int32_t n)
 {
     Poly *p = pnew();
     uint8_t e[NV] = { 0 };
@@ -767,7 +751,7 @@ static void monic(Q *c, int deg)
 /* scale c to integer coefficients with no common factor: remainders grow far slower than when made monic */
 static void prim(Q *c, int deg)
 {
-    long long l = 1, g = 0;
+    int32_t l = 1, g = 0;
     Q k;
     int i;
     for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
@@ -794,7 +778,7 @@ static int dgcd(int na, int nb)
     if (nb >= 0) prim(gb, nb);
     while (nb >= 0) {
         while (na >= nb) {
-            long long lb = gb[nb].n, la = ga[na].n;
+            int32_t lb = gb[nb].n, la = ga[na].n;
             int sh = na - nb;
             for (i = 0; i <= na; i++) ga[i].n = ckmul(ga[i].n, lb);
             for (i = 0; i <= nb; i++) ga[i + sh].n = ckadd(ga[i + sh].n, -ckmul(la, gb[i].n));
@@ -1017,7 +1001,7 @@ no:
    quotient and remainder stay relative to the divisor as typed */
 static void normalize(Rat *r)
 {
-    long long l = 1, g = 0;
+    int32_t l = 1, g = 0;
     int i;
     for (i = 0; i < r->d->n; i++) l = lcm(l, r->d->t[i].c.d);
     for (i = 0; i < r->d->n; i++) g = gcd(g, ckmul(r->d->t[i].c.n, l / r->d->t[i].c.d));
@@ -1176,7 +1160,7 @@ static Poly *binom(const Poly *a, int n)
 {
     const Term *A = &a->t[0], *B = &a->t[1];
     Poly *r = pnew(), *term;
-    long long c = 1;
+    int32_t c = 1;
     uint8_t e[NV];
     int k, v;
     say(L_STEP, "binomial theorem: (%p)^%d", a, n);
@@ -1274,7 +1258,7 @@ static Rat patom(void)
     int ch = peek();
     Rat r;
     if (isdigit(ch) || ch == '.') {
-        long long n = 0, d = 1;
+        int32_t n = 0, d = 1;
         int digits = 0;
         while (s < send && isdigit((unsigned char)*s)) {
             n = ckadd(ckmul(n, 10), *s++ - '0');
@@ -1500,12 +1484,12 @@ static Rat rsubst(Rat r)
 
 static Root roots[MAXD + 1];
 static int nroots;
-static long long ip[MAXD + 1];
+static int32_t ip[MAXD + 1];
 static int ideg;
-static long long dv0[256], dvn[256];
-static long long bqa[2], bqb[2];
+static int32_t dv0[256], dvn[256];
+static int32_t bqa[2], bqb[2];
 static int nbq, bqmult, nquads;
-static struct { long long a, b, c; int mult; } quads[MAXD / 2 + 1];
+static struct { int32_t a, b, c; int mult; } quads[MAXD / 2 + 1];
 static Cx z[MAXD];
 static int zm[MAXD], nz;
 static R dkerr;
@@ -1516,7 +1500,7 @@ static char pstr[1024];
 static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
 {
     Poly *r;
-    long long g = 0, l = 1;
+    int32_t g = 0, l = 1;
     int i, v, show = 0;
     for (v = 0; v < NV; v++) m[v] = MAXE;
     for (i = 0; i < p->n; i++) {
@@ -1560,7 +1544,7 @@ static void wip(int v)
     pfree(p);
 }
 
-static void wlinfactor(long long p, long long q, int v)
+static void wlinfactor(int32_t p, int32_t q, int v)
 {
     uint8_t e[NV] = { 0 };
     e[v] = 1;
@@ -1569,11 +1553,11 @@ static void wlinfactor(long long p, long long q, int v)
     if (p) wmonoi(-p, e, 0);
 }
 
-static void sortll(long long *a, int n)
+static void sortll(int32_t *a, int n)
 {
     int i, j;
     for (i = 1; i < n; i++) {
-        long long t = a[i];
+        int32_t t = a[i];
         for (j = i; j > 0 && a[j - 1] > t; j--) a[j] = a[j - 1];
         a[j] = t;
     }
@@ -1581,9 +1565,9 @@ static void sortll(long long *a, int n)
 
 /* builds divisors from the prime factorization, -1 if there are more than 256.
    ponytail: trial division, so a prime factor past ~10^10 still takes minutes on the calc (clear stops it) */
-static int divisors(long long n, long long *out)
+static int divisors(int32_t n, int32_t *out)
 {
-    long long p, m;
+    int32_t p, m;
     int k = 1, i, base, e, tick = 0;
     if (n < 0) n = -n;
     out[0] = 1;
@@ -1603,7 +1587,7 @@ static int divisors(long long n, long long *out)
     return k;
 }
 
-static void add_root(long long p, long long q, int mult)
+static void add_root(int32_t p, int32_t q, int mult)
 {
     int i;
     for (i = 0; i < nroots; i++) {
@@ -1619,9 +1603,9 @@ static void add_root(long long p, long long q, int mult)
 }
 
 /* P(1) or P(-1), or 0 when it doesn't fit */
-static int psum(int sgn, long long *out)
+static int psum(int sgn, int32_t *out)
 {
-    long long t = 0;
+    int32_t t = 0;
     int k;
     for (k = 0; k <= ideg; k++)
         if (__builtin_add_overflow(t, sgn < 0 && (k & 1) ? -ip[k] : ip[k], &t)) return 0;
@@ -1630,9 +1614,9 @@ static int psum(int sgn, long long *out)
 }
 
 /* divides ip by (qx - p) when p/q is a root */
-static int try_root(long long p, long long q)
+static int try_root(int32_t p, int32_t q)
 {
-    static long long b[MAXD + 1];
+    static int32_t b[MAXD + 1];
     int k;
     if (setjmp(soft_jmp)) {
         soft = 0;
@@ -1641,7 +1625,7 @@ static int try_root(long long p, long long q)
     soft = 1;
     b[ideg] = 0;
     for (k = ideg; k >= 1; k--) {
-        long long t = ckadd(ip[k], ckmul(p, b[k]));
+        int32_t t = ckadd(ip[k], ckmul(p, b[k]));
         if (t % q) break;
         b[k - 1] = t / q;
     }
@@ -1680,7 +1664,7 @@ static void wcandidates(int n0, int nn)
 static void find_roots(int v)
 {
     int i, j, sgn, n0 = 0, nn = 0, found, any = 0, h1, hm;
-    long long p1, pm1, bound;
+    int32_t p1, pm1, bound;
     if (ideg < 2) return;
     begin(L_STEP);
     wputs("rational roots " G_PM "p/q: p|");
@@ -1695,7 +1679,7 @@ static void find_roots(int v)
         }
         /* cheap filters: every root is within the cauchy bound, and p/q a root means (q-p) | P(1), (q+p) | P(-1) */
         for (bound = 1, i = 0; i < ideg; i++) {
-            long long a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
+            int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
             if (c > bound) bound = c;
         }
         h1 = psum(1, &p1);
@@ -1704,7 +1688,7 @@ static void find_roots(int v)
             for (j = 0; j < n0 && !found; j++) {
                 if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
                 for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
-                    long long p = sgn * dv0[j], q = dvn[i];
+                    int32_t p = sgn * dv0[j], q = dvn[i];
                     if (h1 && (q == p ? p1 != 0 : p1 % (q - p) != 0)) continue;
                     if (hm && (q == -p ? pm1 != 0 : pm1 % (q + p) != 0)) continue;
                     poll();
@@ -1746,9 +1730,9 @@ static void find_roots(int v)
     }
 }
 
-static long long isqrt(long long n)
+static int32_t isqrt(int32_t n)
 {
-    long long x = n, y = n / 2 + 1;
+    int32_t x = n, y = n / 2 + 1;
     if (n < 2) return n;
     while (y < x) {
         x = y;
@@ -1757,16 +1741,15 @@ static long long isqrt(long long n)
     return x;
 }
 
-/* ponytail: stops looking for square factors past 10^6, so huge discriminants may not fully simplify */
-static long long sqpart(long long n, long long *rest)
+static int32_t sqpart(int32_t n, int32_t *rest)
 {
-    static long long last_n = -1, last_s, last_r;
-    long long s_ = 1, j, n0 = n;
+    static int32_t last_n = -1, last_s, last_r;
+    int32_t s_ = 1, j, n0 = n;
     if (n == last_n) {
         *rest = last_r;
         return last_s;
     }
-    for (j = 2; j <= n / j && j <= 1000000; j++) {
+    for (j = 2; j <= n / j; j++) {
         if (!(j & 4095)) poll();
         while (n % (j * j) == 0) {
             n /= j * j;
@@ -1795,7 +1778,7 @@ static void wbq(int i, int v)
 /* x^4 + ... with only even powers whose x^2-quadratic has rational roots */
 static int biquad(int v)
 {
-    long long a = ip[4], b = ip[2], c = ip[0], d, sq;
+    int32_t a = ip[4], b = ip[2], c = ip[0], d, sq;
     int i;
     Q u;
     if (ideg != 4 || ip[1] || ip[3]) return 0;
@@ -1810,7 +1793,7 @@ static int biquad(int v)
         bqb[i] = u.d;
     }
     if (ckmul(bqa[0] < 0 ? -bqa[0] : bqa[0], bqb[1]) > ckmul(bqa[1] < 0 ? -bqa[1] : bqa[1], bqb[0])) {
-        long long t = bqa[0];
+        int32_t t = bqa[0];
         bqa[0] = bqa[1];
         bqa[1] = t;
         t = bqb[0];
@@ -1857,7 +1840,7 @@ static void wreal(const R *x)
 }
 
 /* (num ± k·√r·i^neg)/den, or with sgn != 0 just the + or - root */
-static void wradical(long long num, long long k, long long r, int neg, long long den, int sgn)
+static void wradical(int32_t num, int32_t k, int32_t r, int neg, int32_t den, int sgn)
 {
     int paren = den != 1 && num;
     if (paren) wputc('(');
@@ -1874,21 +1857,21 @@ static void wradical(long long num, long long k, long long r, int neg, long long
     }
 }
 
-static void wparen(long long n)
+static void wparen(int32_t n)
 {
     if (n < 0) wputc('(');
     wll(n);
     if (n < 0) wputc(')');
 }
 
-static long long disc(long long a, long long b, long long c)
+static int32_t disc(int32_t a, int32_t b, int32_t c)
 {
     return ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
 }
 
-static void quad_steps(long long a, long long b, long long c, int v)
+static void quad_steps(int32_t a, int32_t b, int32_t c, int v)
 {
-    long long d = disc(a, b, c), r, sq;
+    int32_t d = disc(a, b, c), r, sq;
     int neg = d < 0;
     sq = sqpart(neg ? -d : d, &r);
     say(L_STEP, "quadratic formula: a=%l, b=%l, c=%l", a, b, c);
@@ -1912,9 +1895,9 @@ static void quad_steps(long long a, long long b, long long c, int v)
 }
 
 /* the simplified pieces of (-b ± √disc)/(2a) */
-static int quad_parts(long long a, long long b, long long c, long long *num, long long *k, long long *r, long long *den)
+static int quad_parts(int32_t a, int32_t b, int32_t c, int32_t *num, int32_t *k, int32_t *r, int32_t *den)
 {
-    long long d = disc(a, b, c), sq, g;
+    int32_t d = disc(a, b, c), sq, g;
     int neg = d < 0;
     sq = sqpart(neg ? -d : d, r);
     g = gcd(gcd(b, sq), ckmul(2, a));
@@ -1924,9 +1907,9 @@ static int quad_parts(long long a, long long b, long long c, long long *num, lon
     return neg;
 }
 
-static void quad_result(long long a, long long b, long long c, int v, int mult)
+static void quad_result(int32_t a, int32_t b, int32_t c, int v, int mult)
 {
-    long long num, k, r, den, d = disc(a, b, c);
+    int32_t num, k, r, den, d = disc(a, b, c);
     R re, im, t;
     int neg = quad_parts(a, b, c, &num, &k, &r, &den);
     say(L_RESULT | OPEN, "%c = ", vars[v]);
@@ -2010,7 +1993,7 @@ __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
 __attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v)
 {
     R f;
-    long long k;
+    int32_t k;
     int j, t;
     rset(&v->r, 0);
     rset(&v->i, 0);
@@ -2027,7 +2010,7 @@ __attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx 
 __attribute__((noinline)) static void hornabs(const R *c, int n, int d, const R *x, R *v)
 {
     R f;
-    long long k;
+    int32_t k;
     int j, t;
     rset(v, 0);
     for (j = n; j >= d; j--) {
@@ -2046,12 +2029,6 @@ static void numeric(int fmult)
     static Cx w2, u, p, d, t, sum;
     static R m, maxd, rad, r, tk, stp, two, eps, tol;
     int k, j, it, mult, n = ideg, base = nz;
-    /* a coefficient past 14 significant digits rounds, and the roots that come back belong to a different polynomial */
-    for (k = 0; k <= n; k++) {
-        unsigned long long u = ip[k] < 0 ? -(unsigned long long)ip[k] : (unsigned long long)ip[k];
-        while (u && !(u % 10)) u /= 10;
-        if (u >= 100000000000000ULL) fail("too sensitive to solve numerically");
-    }
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
     /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 */
     rset(&rad, 1);
@@ -2236,7 +2213,7 @@ static void numeric_result(int v)
     }
 }
 
-static void addquad(long long a, long long b, long long c, int mult)
+static void addquad(int32_t a, int32_t b, int32_t c, int mult)
 {
     int i;
     for (i = 0; i < nquads; i++)
@@ -2253,7 +2230,7 @@ static void addquad(long long a, long long b, long long c, int mult)
 /* an integer quartic ip with no rational roots as (p1x^2+q1x+r1)(p2x^2+q2x+r2), if it splits over the integers */
 static int quartic_split(int v)
 {
-    long long a4 = ip[4], a3 = ip[3], a2 = ip[2], a1 = ip[1], a0 = ip[0];
+    int32_t a4 = ip[4], a3 = ip[3], a2 = ip[2], a1 = ip[1], a0 = ip[0];
     int i, j, sg, n4, n0;
     if (ideg != 4) return 0;
     n4 = divisors(a4, dv0);
@@ -2262,7 +2239,7 @@ static int quartic_split(int v)
     for (i = 0; i < n4; i++)
         for (j = 0; j < n0; j++)
             for (sg = 1; sg >= -1; sg -= 2) {
-                long long p1 = dv0[i], p2 = a4 / p1, r1 = sg * dvn[j], r2 = a0 / r1, det, q1, q2;
+                int32_t p1 = dv0[i], p2 = a4 / p1, r1 = sg * dvn[j], r2 = a0 / r1, det, q1, q2;
                 poll();
                 /* p2 q1 + p1 q2 = a3, r2 q1 + r1 q2 = a1 */
                 det = ckadd(ckmul(p2, r1), -ckmul(p1, r2));
@@ -2275,7 +2252,7 @@ static int quartic_split(int v)
                 } else {
                     /* the two linear conditions coincide: q1 = (a3 - p1 q2)/p2 into the x^2 one gives
                        p1 q2^2 - a3 q2 + p2 (a2 - p1 r2 - r1 p2) = 0 */
-                    long long k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckadd(ckmul(a3, a3), -ckmul(4, ckmul(p1, ckmul(p2, k2)))), sq2;
+                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckadd(ckmul(a3, a3), -ckmul(4, ckmul(p1, ckmul(p2, k2)))), sq2;
                     if (dd2 < 0) continue;
                     sq2 = isqrt(dd2);
                     if (sq2 * sq2 != dd2 || (a3 + sq2) % (2 * p1)) continue;
@@ -2300,7 +2277,7 @@ static int quartic_split(int v)
 /* make dense rational c (degree deg) the integer primitive ip with a positive lead */
 static void toip(const Q *c, int deg)
 {
-    long long l = 1, g = 0;
+    int32_t l = 1, g = 0;
     int i;
     for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
     for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
@@ -2405,7 +2382,7 @@ static int sqfree(void)
 /* a quadratic ip whose discriminant is a perfect square: its two rational roots */
 static int rational_quadratic(int mult)
 {
-    long long d, sq;
+    int32_t d, sq;
     Q a, b;
     if (ideg != 2 || (d = disc(ip[2], ip[1], ip[0])) < 0) return 0;
     sq = isqrt(d);
@@ -2503,7 +2480,7 @@ static int ptpri(char tag)
     return tag == 'd' ? 2 : tag == 'h';
 }
 
-static void addpt(const R *x, long long p, long long q, int mult, char tag, const char *str)
+static void addpt(const R *x, int32_t p, int32_t q, int mult, char tag, const char *str)
 {
     R d, tol;
     int i;
@@ -2527,9 +2504,9 @@ static void addpt(const R *x, long long p, long long q, int mult, char tag, cons
     npts++;
 }
 
-static void quadpts(long long a, long long b, long long c, int mult, char tag)
+static void quadpts(int32_t a, int32_t b, int32_t c, int mult, char tag)
 {
-    long long num, k, r, den;
+    int32_t num, k, r, den;
     R sq, x, t;
     int sgn;
     if (quad_parts(a, b, c, &num, &k, &r, &den)) return;
@@ -2726,7 +2703,7 @@ static void do_expand(Rat r)
     domain_line();
 }
 
-static long long lf[2 * MAXD + 2];
+static int32_t lf[2 * MAXD + 2];
 static int nlf, lfd[MAXD], lfm[MAXD];
 
 static int lfat(int k)
@@ -2763,7 +2740,7 @@ static void factor_into(const Poly *p, char *buf, int cap)
                     } else if (ideg == 2) {
                         addquad(ip[2], ip[1], ip[0], fmul[j]);
                     } else {
-                        memcpy(lf + lfat(nlf), ip, (ideg + 1) * sizeof(long long));
+                        memcpy(lf + lfat(nlf), ip, (ideg + 1) * sizeof(int32_t));
                         lfd[nlf] = ideg;
                         lfm[nlf++] = fmul[j];
                     }
@@ -2812,7 +2789,7 @@ static void factor_into(const Poly *p, char *buf, int cap)
         }
     }
     for (i = 0; i < nlf; i++) {
-        memcpy(ip, lf + lfat(i), (lfd[i] + 1) * sizeof(long long));
+        memcpy(ip, lf + lfat(i), (lfd[i] + 1) * sizeof(int32_t));
         ideg = lfd[i];
         wputc('(');
         wip(v);
@@ -2897,7 +2874,7 @@ static void do_factor(Rat r)
 
 static int rootcmp(const Root *a, const Root *b)
 {
-    long long x = ckmul(a->p, b->q), y = ckmul(b->p, a->q);
+    int32_t x = ckmul(a->p, b->q), y = ckmul(b->p, a->q);
     return x < y ? -1 : x > y;
 }
 

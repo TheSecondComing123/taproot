@@ -163,13 +163,13 @@ int main(int argc, char **argv)
     check(S, "y^2-2=0", "y = " G_PM G_SQRT "2 | y " G_APPROX " " G_PM "1.414214");
     check(S, "(x^3+1)/(x-2)=0", "x = -1 | x = (1" G_PM "i" G_SQRT "3)/2 | x " G_APPROX " 0.5" G_PM "0.866025i");
 
-    check(F, "x^31+10000000000", "= x^31+10000000000");
+    check(F, "x^31+1000000000", "= x^31+1000000000");
     check(F, "x^2-1441440", "= x^2-1441440");
     check(F, "x^4-4x^2+4", "= (x^2-2)^2");
     check(S, "x^4-4x^2+4=0", "x = " G_PM G_SQRT "2 (multiplicity 2) | x " G_APPROX " " G_PM "1.414214 (multiplicity 2)");
     check(S, "(x^2+x-1)^2=0", "x = (-1" G_PM G_SQRT "5)/2 (multiplicity 2) | x " G_APPROX " 0.618034, -1.618034 (multiplicity 2)");
     check(S, "(x^3-2x-5)^3=0", "x " G_APPROX " 2.094551 (multiplicity 3) | x " G_APPROX " -1.047276" G_PM "1.13594i (multiplicity 3)");
-    check(S, "(x+2)^40=1", "too sensitive to solve numerically");
+    check(S, "(x+2)^40=1", "numbers too big");
     check(S, "(x-3)^6=2", "x " G_APPROX " 1.877538 | x " G_APPROX " 4.122462 | x " G_APPROX " 2.438769" G_PM "0.972081i | x " G_APPROX " 3.561231" G_PM "0.972081i");
     check(E, "x^50, x=1", "= 1");
     check(E, "1.5.3", "a number has two decimal points");
@@ -257,10 +257,10 @@ int main(int argc, char **argv)
     check(E, "a+b+c+d+e", "too many letters (max 4)");
     check(E, "(99x+99)^30", "numbers too big");
     check(E, "99999999999999999999", "numbers too big");
-    check(E, "3000000000*3000000000", "= 9000000000000000000");
-    check(E, "-3000000000*3000000000", "= -9000000000000000000");
-    check(E, "3037000499*3037000499", "= 9223372030926249001");
-    check(E, "3037000500*3037000500", "numbers too big");
+    check(E, "46340*46340", "= 2147395600");
+    check(E, "-46340*46340", "= -2147395600");
+    check(E, "2147483647+0", "= 2147483647");
+    check(E, "46341*46341", "numbers too big");
     check(E, "4611686018427387904*2", "numbers too big");
     check(E, "x/0", "division by zero");
     check(E, "x^2, x=y", "= y^2");
