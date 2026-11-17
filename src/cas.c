@@ -1951,9 +1951,15 @@ static void wparen(int32_t n)
     if (n < 0) wputc(')');
 }
 
+/* a b - c d */
+static int32_t ckcross(int32_t a, int32_t b, int32_t c, int32_t d)
+{
+    return ckadd(ckmul(a, b), -ckmul(c, d));
+}
+
 static int32_t disc(int32_t a, int32_t b, int32_t c)
 {
-    return ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
+    return ckcross(b, b, 4, ckmul(a, c));
 }
 
 /* pw 2 solves for v^2 */
@@ -2230,9 +2236,8 @@ static void numeric(int fmult)
         if (rzero(&z[k].i)) continue;
         for (j = base; j < nz; j++) {
             if (j == k || zm[j] != zm[k]) continue;
-            t = z[j];
-            xadd(&t.i, &t.i, &z[k].i);
-            xsub(&t.r, &t.r, &z[k].r);
+            xadd(&t.i, &z[j].i, &z[k].i);
+            xsub(&t.r, &z[j].r, &z[k].r);
             cnorm(&m, &t);
             rtol(&tol, &z[k].r, -3);
             if (rlt(&m, &tol)) break;
@@ -2336,23 +2341,24 @@ static int quartic_split(int v)
                 int32_t p1 = dv0[i], p2 = a4 / p1, r1 = sg * dvn[j], r2 = a0 / r1, det, q1, q2;
                 poll();
                 /* p2 q1 + p1 q2 = a3, r2 q1 + r1 q2 = a1 */
-                det = ckadd(ckmul(p2, r1), -ckmul(p1, r2));
+                det = ckcross(p2, r1, p1, r2);
                 if (det) {
-                    q1 = ckadd(ckmul(a3, r1), -ckmul(p1, a1));
-                    q2 = ckadd(ckmul(p2, a1), -ckmul(a3, r2));
+                    q1 = ckcross(a3, r1, p1, a1);
+                    q2 = ckcross(p2, a1, a3, r2);
                     if (q1 % det || q2 % det) continue;
                     q1 /= det;
                     q2 /= det;
                 } else {
                     /* the two linear conditions coincide: q1 = (a3 - p1 q2)/p2 into the x^2 one gives
                        p1 q2^2 - a3 q2 + p2 (a2 - p1 r2 - r1 p2) = 0 */
-                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckadd(ckmul(a3, a3), -ckmul(4, ckmul(p1, ckmul(p2, k2)))), sq2;
+                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckcross(a3, a3, 4, ckmul(p1, ckmul(p2, k2))), sq2;
                     if (dd2 < 0) continue;
                     sq2 = isqrt(dd2);
                     if (sq2 * sq2 != dd2 || (a3 + sq2) % (2 * p1)) continue;
                     q2 = (a3 + sq2) / (2 * p1);
-                    if (ckadd(a3, -ckmul(p1, q2)) % p2) continue;
-                    q1 = ckadd(a3, -ckmul(p1, q2)) / p2;
+                    q1 = ckadd(a3, -ckmul(p1, q2));
+                    if (q1 % p2) continue;
+                    q1 /= p2;
                     if (ckadd(ckmul(r2, q1), ckmul(r1, q2)) != a1) continue;
                 }
                 if (ckadd(ckadd(ckmul(p1, r2), ckmul(q1, q2)), ckmul(r1, p2)) != a2) continue;
