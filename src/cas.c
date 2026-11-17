@@ -478,7 +478,8 @@ static void wpoly(const Poly *p)
     for (i = 0; i < p->n; i++) wmono(&p->t[i].c, p->t[i].e, !i);
 }
 
-/* degree ignores i, and real terms come before their imaginary twins, so 3+2i reads that way */
+/* negative when a goes first. degree ignores i, and real terms come before their imaginary twins, so 3+2i
+   reads that way */
 static int mcmp(const uint8_t *a, const uint8_t *b)
 {
     int da_ = 0, db_ = 0, i;
@@ -487,11 +488,10 @@ static int mcmp(const uint8_t *a, const uint8_t *b)
         da_ += a[i];
         db_ += b[i];
     }
-    if (da_ != db_) return da_ > db_ ? -1 : 1;
+    if (da_ != db_) return db_ - da_;
     for (i = 0; i < NV; i++)
-        if (i != iv && a[i] != b[i]) return a[i] > b[i] ? -1 : 1;
-    if (iv >= 0 && a[iv] != b[iv]) return a[iv] < b[iv] ? -1 : 1;
-    return 0;
+        if (i != iv && a[i] != b[i]) return b[i] - a[i];
+    return iv >= 0 ? a[iv] - b[iv] : 0;
 }
 
 static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
@@ -1251,14 +1251,15 @@ static Rat rpow(Rat a, int k)
 {
     Rat r;
     if (k < 0) {
-        if (!a.n->n) fail("division by zero");
-        track(a.n);
-        r.n = a.d ? ppow(a.d, -k) : pconsti(1);
-        r.d = ppow(a.n, -k);
-    } else {
-        r.n = ppow(a.n, k);
-        r.d = a.d ? ppow(a.d, k) : 0;
+        Poly *t = a.n;
+        if (!t->n) fail("division by zero");
+        track(t);
+        a.n = a.d;
+        a.d = t;
+        k = -k;
     }
+    r.n = a.n ? ppow(a.n, k) : pconsti(1);
+    r.d = a.d ? ppow(a.d, k) : 0;
     rsimp(&r);
     return r;
 }
