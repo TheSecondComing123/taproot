@@ -2026,32 +2026,32 @@ static void rseti(R *r, int v)
     rset(r, v);
 }
 
+/* r = a b op c d, op xadd or xsub */
+static void xdot(R *r, const R *a, const R *b, const R *c, const R *d, void (*op)(R *, const R *, const R *))
+{
+    R t, u;
+    xmul(&t, a, b);
+    xmul(&u, c, d);
+    op(r, &t, &u);
+}
+
 __attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
 {
-    R t1, t2, t3, t4;
-    xmul(&t1, &a->r, &b->r);
-    xmul(&t2, &a->i, &b->i);
-    xmul(&t3, &a->r, &b->i);
-    xmul(&t4, &a->i, &b->r);
-    xsub(&a->r, &t1, &t2);
-    xadd(&a->i, &t3, &t4);
+    R t;
+    xdot(&t, &a->r, &b->r, &a->i, &b->i, xsub);
+    xdot(&a->i, &a->r, &b->i, &a->i, &b->r, xadd);
+    a->r = t;
 }
 
 __attribute__((noinline)) static void cdiv(Cx *a, const Cx *b)
 {
-    R m, t1, t2;
-    xmul(&m, &b->r, &b->r);
-    xmul(&t1, &b->i, &b->i);
-    xadd(&m, &m, &t1);
+    R m, t;
+    xdot(&m, &b->r, &b->r, &b->i, &b->i, xadd);
     if (rzero(&m)) rten(&m, -30);
-    xmul(&t1, &a->r, &b->r);
-    xmul(&t2, &a->i, &b->i);
-    xadd(&t1, &t1, &t2);
-    xmul(&t2, &a->i, &b->r);
-    xmul(&a->i, &a->r, &b->i);
-    xsub(&a->i, &t2, &a->i);
+    xdot(&t, &a->r, &b->r, &a->i, &b->i, xadd);
+    xdot(&a->i, &a->i, &b->r, &a->r, &b->i, xsub);
     xdiv(&a->i, &a->i, &m);
-    xdiv(&a->r, &t1, &m);
+    xdiv(&a->r, &t, &m);
 }
 
 __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
