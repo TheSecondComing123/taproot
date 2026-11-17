@@ -3832,45 +3832,13 @@ static void do_system(const char **part, const char **pend, int n)
 
 /* ---------- entry ---------- */
 
-/* the one relation in [a, b): returns its code ('=', '<', '>', 'L' for <=, 'G' for >=), sets *at and *len */
-static int find_rel(const char *a, const char *b, const char **at, int *len)
-{
-    const char *p;
-    int rel = 0, depth = 0;
-    for (p = a; p < b; p++) {
-        int r = *p == '=' ? '=' : *p == '<' ? '<' : *p == '>' ? '>' : *p == G_LE[0] ? 'L' : *p == G_GE[0] ? 'G' : 0;
-        int l = 1;
-        depth += (*p == '(') - (*p == ')');
-        if (!r) continue;
-        if (depth) fail("= and inequality signs can't go inside ( )");
-        if ((r == '<' || r == '>') && p + 1 < b && p[1] == '=') {
-            r = r == '<' ? 'L' : 'G';
-            l = 2;
-        }
-        if (rel) fail("only one = or inequality sign allowed");
-        rel = r;
-        *at = p;
-        *len = l;
-        p += l - 1;
-    }
-    return rel;
-}
-
-/* "y=..." for the function commands: the left side must be one letter */
-static const char *rhs_of(const char *a, const char *at, int len)
-{
-    while (a < at && *a == ' ') a++;
-    if (at - a < 1 || !isalpha((unsigned char)*a)) fail("write it as y=... or just the expression");
-    for (a++; a < at; a++)
-        if (*a != ' ') fail("write it as y=... or just the expression");
-    return at + len;
-}
-
 void cas_run(int cmd, const char *input)
 {
-    const char *part[NV + 1], *pend[NV + 1], *at = 0, *p;
-    int cur = 0, depth = 0, i, rel = 0, rlen = 0;
+    static void (*const run[])(Rat) = { do_expand, do_factor, 0, do_deriv, do_vertex, do_zeros, 0, do_inverse };
+    const char *part[NV + 1], *pend[NV + 1], *at = 0, *p, *a, *b;
+    int cur = 0, depth = 0, i, rel = 0, rlen = 1;
     Rat r;
+    Poly *q;
 
     cas_nlines = textlen = hidden = quiet = soft = 0;
     nv = nest = 0;
@@ -3880,7 +3848,7 @@ void cas_run(int cmd, const char *input)
     dom = 0;
     domv = -1;
     memset(assigned, 0, sizeof assigned);
-    for (i = 0; i < POOL; i++) pool[i].used = 0;
+    for (q = pool; q < pool + POOL; q++) q->used = 0;
     /* an os math error (a real past 1e99) lands here with the handler already gone. the handler goes
        on before setjmp so a fail() longjmp comes back with the stack os_PopErrorHandler expects */
     if (os_PushErrorHandler()) {
@@ -3907,22 +3875,45 @@ void cas_run(int cmd, const char *input)
         }
     }
     pend[cur] = p;
-    for (p = part[0]; p < pend[0] && *p == ' '; p++);
-    if (p == pend[0]) fail("type an expression first");
+    a = input;
+    b = pend[0];
+    for (p = a; p < b && *p == ' '; p++);
+    if (p == b) fail("type an expression first");
 
     if (cmd == CMD_SYSTEM) {
         do_system(part, pend, cur + 1);
         os_PopErrorHandler();
         return;
     }
-    rel = find_rel(part[0], pend[0], &at, &rlen);
+    /* the one relation: '=', '<', '>', 'L' for <=, 'G' for >= */
+    for (depth = 0, p = a; p < b; p++) {
+        static const char sym[] = "=<>" G_LE G_GE, code[] = "=<>LG";
+        const char *k = strchr(sym, *p);
+        depth += (*p == '(') - (*p == ')');
+        if (!k) continue;
+        if (depth) fail("= and inequality signs can't go inside ( )");
+        if (rel) fail("only one = or inequality sign allowed");
+        rel = code[k - sym];
+        at = p;
+        if ((rel == '<' || rel == '>') && p + 1 < b && p[1] == '=') {
+            rel = code[k - sym + 2];
+            rlen = 2;
+            p++;
+        }
+    }
     for (i = 1; i <= cur; i++) parse_value(part[i], pend[i]);
     if (cmd == CMD_SOLVE && cur) fail("solve finds the values itself, drop the , x=");
     if (rel && cmd != CMD_SOLVE) {
         if (rel != '=' || cmd == CMD_EXPAND || cmd == CMD_FACTOR || cmd == CMD_DERIV) fail("use solve for equations and inequalities");
-        r = parse(rhs_of(part[0], at, rlen), pend[0]);
-    } else if (rel) {
-        Rat lhs = parse(part[0], at), rhs = parse(at + rlen, pend[0]);
+        /* y=... : the left side must be one letter */
+        while (*a == ' ') a++;
+        i = isalpha((unsigned char)*a++);
+        while (*a == ' ') a++;
+        if (!i || a != at) fail("write it as y=... or just the expression");
+        a++;
+    }
+    if (rel && cmd == CMD_SOLVE) {
+        Rat lhs = parse(a, at), rhs = parse(at + rlen, b);
         r = radd(lhs, rhs, 1, 0);
         if (rel == '=' && (rhs.n->n || rhs.d)) {
             say(L_STEP, "move everything to one side: %r=0", r);
@@ -3930,16 +3921,9 @@ void cas_run(int cmd, const char *input)
         rfree(lhs);
         rfree(rhs);
     } else {
-        r = parse(part[0], pend[0]);
+        r = parse(a, b);
     }
-    switch (cmd) {
-    case CMD_EXPAND: do_expand(r); break;
-    case CMD_FACTOR: do_factor(r); break;
-    case CMD_SOLVE: do_solve(r, rel ? rel : '='); break;
-    case CMD_DERIV: do_deriv(r); break;
-    case CMD_VERTEX: do_vertex(r); break;
-    case CMD_ZEROS: do_zeros(r); break;
-    case CMD_INVERSE: do_inverse(r); break;
-    }
+    if (cmd == CMD_SOLVE) do_solve(r, rel ? rel : '=');
+    else run[cmd](r);
     os_PopErrorHandler();
 }
