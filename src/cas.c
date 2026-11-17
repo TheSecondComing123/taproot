@@ -2076,16 +2076,16 @@ __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
     xdiv(r, r, &t);
 }
 
-/* value of the d-th derivative of monic c (degree n) at z. with abs, at a real z >= 0 and with every coefficient
+/* value of the d-th derivative of monic c (degree ideg) at z. with abs, at a real z >= 0 and with every coefficient
    made positive: the scale rounding errors in the d-th derivative work against */
-__attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v, int abs)
+__attribute__((noinline)) static void horner(const R *c, int d, const Cx *zz, Cx *v, int abs)
 {
     R f;
     int32_t k;
     int j, t;
     rseti(&v->r, 0);
     rseti(&v->i, 0);
-    for (j = n; j >= d; j--) {
+    for (j = ideg; j >= d; j--) {
         for (k = 1, t = 0; t < d; t++) k *= j - t;
         rset(&f, k);
         xmul(&f, &f, &c[j]);
@@ -2099,7 +2099,8 @@ static void numeric(int fmult)
 {
     static R c[MAXD + 1];
     static Cx w2, u, p, d, t, sum;
-    static R m, maxd, rad, r, tk, stp, eps, tol;
+    static R m, maxd, tk, stp, eps;
+    R tol, rad, r;
     int k, j, it, mult, cx, n = ideg, base = nz;
     Cx *zb = z + base, *ze = zb + n, *zk, *zj;
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
@@ -2139,7 +2140,7 @@ static void numeric(int fmult)
         poll();
         rseti(&maxd, 0);
         for (zk = zb; zk < ze; zk++) {
-            horner(c, n, 0, zk, &p, 0);
+            horner(c, 0, zk, &p, 0);
             rseti(&d.r, 1);
             rseti(&d.i, 0);
             for (zj = zb; zj < ze; zj++) {
@@ -2182,8 +2183,8 @@ static void numeric(int fmult)
         xdiv(&sum.r, &sum.r, &m);
         xdiv(&sum.i, &sum.i, &m);
         for (rseti(&m, 0), it = 0; it < 8; it++) {
-            horner(c, n, mult - 1, &sum, &p, 0);
-            horner(c, n, mult, &sum, &d, 0);
+            horner(c, mult - 1, &sum, &p, 0);
+            horner(c, mult, &sum, &d, 0);
             if (rzero(&d.r) && rzero(&d.i)) break;
             cdiv(&p, &d);
             csubrel(&m, &sum, &p);
@@ -2194,11 +2195,10 @@ static void numeric(int fmult)
             Cx ay, num;
             cnorm(&ay.r, &sum);
             rseti(&ay.i, 0);
-            horner(c, n, mult - 1, &ay, &num, 1);
-            horner(c, n, mult, &sum, &d, 0);
+            horner(c, mult - 1, &ay, &num, 1);
+            horner(c, mult, &sum, &d, 0);
             cnorm(&tol, &d);
-            rseti(&eps, 1);
-            xadd(&ay.r, &ay.r, &eps);
+            rtol(&ay.r, &ay.r, 0);
             xmul(&tol, &tol, &ay.r);
             rten(&eps, -14);
             xmul(&num.r, &num.r, &eps);
