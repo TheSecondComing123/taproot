@@ -35,6 +35,12 @@ static const uint8_t accent[] = { C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_TEAL };
 #define KEYS 4
 
 static const char *help[] = {
+    "y=        expand (2x-3)^5",
+    "window    factor x^3-1",
+    "zoom      solve  x^2+2x+5=0",
+    "trace     d/dx   3x^4-5x, x=1",
+    "on an empty line they use the answer",
+    "2nd enter earlier inputs",
     "X,T,\x07,n   types x",
     "alpha     next key types a letter",
     "2nd alpha letters until alpha",
@@ -43,7 +49,7 @@ static const char *help[] = {
     ",         values: x^2+1, x=3",
     "enter     solve if =, else last",
     "del       backspace",
-    "clear     line, then output",
+    "clear     line, output, or a run",
     "\x05 \x06       scroll, 2nd = page",
     "2nd mode  quit",
 };
@@ -63,8 +69,8 @@ static const char alpha[] = {
     [sk_6] = 'v', [sk_Sub] = 'w', [sk_Store] = 'x', [sk_1] = 'y', [sk_2] = 'z',
 };
 
-static char in[MAXIN + 1];
-static int cur, mode, last, shown = -1, scroll;
+static char in[MAXIN + 1], ans[MAXIN + 1], hist[4][MAXIN + 1];
+static int cur, mode, last, shown = -1, scroll, nhist, hpos;
 static char head[MAXIN + 16];
 static const char **lines;
 static const uint8_t *kinds;
@@ -93,15 +99,20 @@ static int input_rows(void)
     return r > 3 ? 3 : r;
 }
 
-/* walks every wrapped output row; draws the visible ones, returns the total */
+/* walks every wrapped output row, answers before steps; draws the visible ones, returns the total */
 static int layout(int top, int vis, int draw)
 {
-    int i, row = 0;
-    for (i = -1; i < nout; i++) {
-        const char *s = i < 0 ? head : lines[i];
-        int k = i < 0 ? -1 : kinds[i];
-        uint8_t color = k < 0 ? C_SUB : k == L_RESULT ? accent[shown] : k == L_APPROX ? C_SUB : k == L_ERROR ? C_RED : C_TEXT;
+    int i, pass, row = 0, steps = 0;
+    for (i = 0; i < nout; i++) steps |= kinds[i] == L_STEP;
+    for (pass = 0; pass < 4; pass++)
+    for (i = pass == 1 || pass == 3 ? 0 : -1; i < (pass == 1 || pass == 3 ? nout : 0); i++) {
+        const char *s = pass == 0 ? head : pass == 2 ? "steps" : lines[i];
+        int k = pass == 0 ? -1 : pass == 2 ? L_APPROX : kinds[i];
+        uint8_t color = k < 0 ? C_SUB : k == L_RESULT ? accent[shown] : k == L_APPROX ? C_OVER : k == L_ERROR ? C_RED : C_TEXT;
         int first = 1;
+        if (pass == 2 && (!steps || shown == KEYS)) continue;
+        if (pass == 1 && k == L_STEP) continue;
+        if (pass == 3 && k != L_STEP) continue;
         do {
             int ind = first ? 0 : 2, n = cut(s, COLS - ind);
             if (draw && row >= scroll && row < scroll + vis) {
@@ -190,14 +201,43 @@ static void show(int cmd)
     strcat(head, cmd == KEYS ? "" : in);
 }
 
+/* an = before the first top-level comma; the ones after it are values like x=3 */
+static int equation(void)
+{
+    int i, depth = 0;
+    for (i = 0; in[i]; i++) {
+        if (in[i] == '(') depth++;
+        else if (in[i] == ')') depth--;
+        else if (in[i] == ',' && depth <= 0) return 0;
+        else if (in[i] == '=') return 1;
+    }
+    return 0;
+}
+
+static int stop(void)
+{
+    return os_GetCSC() == sk_Clear;
+}
+
 static void run(int cmd)
 {
+    int i;
+    if (!*in) {
+        strcpy(in, ans);
+        cur = strlen(in);
+    }
     if (!*in) {
         msg = "type something first";
         return;
     }
+    if (strcmp(in, hist[0])) {
+        for (i = 3; i > 0; i--) strcpy(hist[i], hist[i - 1]);
+        strcpy(hist[0], in);
+        if (nhist < 4) nhist++;
+    }
+    hpos = 0;
     last = cmd;
-    msg = "working...";
+    msg = "working, clear stops";
     draw();
     msg = 0;
     cas_run(cmd, in);
@@ -205,6 +245,13 @@ static void run(int cmd)
     kinds = cas_kind;
     nout = cas_nlines;
     show(cmd);
+    *ans = 0;
+    for (i = 0; i < nout && cmd != CMD_SOLVE; i++) {
+        const char *s = lines[i];
+        if (kinds[i] != L_RESULT) continue;
+        if (s[0] == '=' && !strchr(s, ',') && !strstr(s, "/(") && strlen(s + 2) <= MAXIN) strcpy(ans, s + 2);
+        break;
+    }
 }
 
 static void insert(const char *t)
@@ -232,6 +279,7 @@ int main(void)
     gfx_SetMonospaceFont(8);
     gfx_SetTextTransparentColor(C_NONE);
     gfx_SetTextBGColor(C_NONE);
+    cas_stop = stop;
 
     for (;;) {
         draw();
@@ -262,11 +310,20 @@ int main(void)
                 insert("=");
                 continue;
             }
+            if (k == sk_Enter) {
+                if (nhist) {
+                    strcpy(in, hist[hpos]);
+                    cur = strlen(in);
+                    hpos = (hpos + 1) % nhist;
+                }
+                continue;
+            }
             if (k == sk_Left) cur = 0;
             else if (k == sk_Right) cur = strlen(in);
             else if (k == sk_Up) scroll -= page;
             else if (k == sk_Down) scroll += page;
-            if (k == sk_Left || k == sk_Right || k == sk_Up || k == sk_Down) continue;
+            else msg = "2nd + key not used";
+            continue;
         }
         switch (k) {
         case sk_Yequ: run(CMD_EXPAND); break;
@@ -279,7 +336,7 @@ int main(void)
             nout = sizeof help / sizeof *help;
             show(KEYS);
             break;
-        case sk_Enter: run(strchr(in, '=') ? CMD_SOLVE : last); break;
+        case sk_Enter: run(equation() ? CMD_SOLVE : last); break;
         case sk_Del:
             if (cur) {
                 memmove(in + cur - 1, in + cur, strlen(in) - cur + 1);
@@ -300,7 +357,7 @@ int main(void)
                 ch[0] = normal[k];
                 insert(ch);
             } else {
-                msg = "that key isn't used here";
+                msg = "key not used here";
             }
         }
     }
