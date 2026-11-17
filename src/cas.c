@@ -3535,9 +3535,8 @@ static void do_zeros(Rat r)
         say(L_RESULT, "degree %d, leading coefficient %q", dn, &lc);
         say(L_RESULT, "%c" G_TO "-" G_INF ": y" G_TO "%s" G_INF ", %c" G_TO G_INF ": y" G_TO "%s" G_INF,
             x, up == !(dn & 1) ? "" : "-", x, up ? "" : "-");
-    } else if (dn < dd) {
-        say(L_RESULT, "horizontal asymptote y = 0");
-    } else if (dn == dd) {
+    } else if (dn <= dd) {
+        if (dn < dd) lc.n = 0;
         qdiv(&lc, &lc, &r.d->t[0].c);
         say(L_RESULT, "horizontal asymptote y = %q", &lc);
     } else {
