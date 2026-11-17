@@ -1944,13 +1944,6 @@ static void wradical(int32_t num, int32_t k, int32_t r, int neg, int32_t den, in
     }
 }
 
-static void wparen(int32_t n)
-{
-    if (n < 0) wputc('(');
-    wll(n);
-    if (n < 0) wputc(')');
-}
-
 /* a b - c d */
 static int32_t ckcross(int32_t a, int32_t b, int32_t c, int32_t d)
 {
@@ -1967,18 +1960,13 @@ static void quad_steps(int32_t a, int32_t b, int32_t c, int v, int pw)
 {
     int32_t d = disc(a, b, c), r, sq;
     int neg = d < 0;
+    Q bq = { b, 1 };
     sq = sqpart(neg ? -d : d, &r);
     say(L_STEP, "quadratic formula: a=%l, b=%l, c=%l", a, b, c);
-    say(L_STEP | OPEN, "disc = ");
-    wparen(b);
-    say(MORE, "^2-4(%l)(%l) = %l", a, c, d);
+    say(L_STEP, "disc = %Q^2-4(%l)(%l) = %l", &bq, a, c, d);
     if (sq != 1 || neg) {
         say(L_STEP | OPEN, G_SQRT "%l = ", d);
-        if (sq != 1 || r == 1) wll(sq);
-        if (neg) wputc('i');
-        if (r != 1) {
-            say(MORE | OPEN, G_SQRT "%l", r);
-        }
+        wradical(0, sq, r, neg, 1, 1);
         end();
     }
     if (gcd(gcd(b, sq), 2 * a) != 1) {
@@ -2016,8 +2004,7 @@ static void quad_result(int32_t a, int32_t b, int32_t c, int v, int mult)
     xsqrt(&im, &im);
     rset(&t, 2 * a);
     xdiv(&im, &im, &t);
-    say(L_APPROX | OPEN, "%c", vars[v]);
-    wputs(" " G_APPROX " ");
+    say(L_APPROX | OPEN, "%c " G_APPROX " ", vars[v]);
     if (neg) {
         if (b) wreal(&re);
         say(MORE | OPEN, G_PM "%Ri", &im);
@@ -2284,8 +2271,7 @@ static void numeric_result(int v)
     int k;
     for (k = 0; k < nz; k++) {
         if (z[k].i.sign & 0x80) continue;
-        say(L_APPROX | OPEN, "%c", vars[v]);
-        wputs(" " G_APPROX " ");
+        say(L_APPROX | OPEN, "%c " G_APPROX " ", vars[v]);
         wreal(&z[k].r);
         if (!rzero(&z[k].i)) {
             say(MORE | OPEN, G_PM "%Ri", &z[k].i);
