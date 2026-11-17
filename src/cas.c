@@ -2094,6 +2094,11 @@ __attribute__((noinline)) static void horner(const R *c, int d, const Cx *zz, Cx
     }
 }
 
+static void rmax(R *a, const R *b)
+{
+    if (rlt(a, b)) *a = *b;
+}
+
 static void numeric(int fmult)
 {
     static R c[MAXD + 1];
@@ -2111,7 +2116,7 @@ static void numeric(int fmult)
         rabs(&a);
         xadd(&stp, &stp, &stp);
         for (rseti(&r, 1), rseti(&tk, 1); rlt(&tk, &a); xmul(&tk, &tk, &stp)) xadd(&r, &r, &r);
-        if (rlt(&rad, &r)) rad = r;
+        rmax(&rad, &r);
     }
     /* work in y = x/rad so every root sits near the unit circle and nothing overflows the os reals */
     for (rseti(&r, 1), k = n - 1; k >= 0; k--) {
@@ -2150,7 +2155,7 @@ static void numeric(int fmult)
             }
             cdiv(&p, &d);
             csubrel(&m, zk, &p);
-            if (rlt(&maxd, &m)) maxd = m;
+            rmax(&maxd, &m);
         }
         if (rlt(&maxd, &eps)) break;
     }
@@ -2205,7 +2210,7 @@ static void numeric(int fmult)
             xdiv(&num.r, &num.r, &tol);
             xadd(&m, &m, &num.r);
         }
-        if (rlt(&dkerr, &m)) dkerr = m;
+        rmax(&dkerr, &m);
         xmul(&sum.r, &sum.r, &rad);
         xmul(&sum.i, &sum.i, &rad);
         /* a merged cluster only knows its root to about eps^(1/mult), so it gets a looser real-or-not test */
