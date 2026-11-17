@@ -3796,7 +3796,8 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
     }
 }
 
-static void do_system(const char **part, const char **pend, int n)
+/* part i is [part[i], part[i + 1] - 1) */
+static void do_system(const char **part, int n)
 {
     static Poly *eq[NV + 1];
     int i, j, v, nonlin = -1, lin = -1, u = -1;
@@ -3807,9 +3808,9 @@ static void do_system(const char **part, const char **pend, int n)
         const char *p, *rel = 0;
         Rat d;
         int deg = 0;
-        for (p = part[i]; p < pend[i]; p++)
+        for (p = part[i]; p < part[i + 1] - 1; p++)
             if (*p == '=') rel = p;
-        sides(&d, part[i], rel, 1, pend[i], 0);
+        sides(&d, part[i], rel, 1, p, 0);
         if (d.d) fail("systems need polynomial equations, no fractions with variables");
         eq[i] = d.n;
         if (hasi(d.n)) fail("systems need real coefficients");
@@ -3845,7 +3846,7 @@ static void do_system(const char **part, const char **pend, int n)
 void cas_run(int cmd, const char *input)
 {
     static void (*const run[])(Rat) = { do_expand, do_factor, 0, do_deriv, do_vertex, do_zeros, 0, do_inverse };
-    const char *part[NV + 1], *pend[NV + 1], *at = 0, *p, *a, *b;
+    const char *part[NV + 2], *at = 0, *p, *a, *b;
     int cur = 0, depth = 0, i, rel = 0, rlen = 1;
     Rat r;
     Poly *q;
@@ -3880,18 +3881,17 @@ void cas_run(int cmd, const char *input)
         else if (*p == ')') depth--;
         else if (*p == ',' && depth <= 0) {
             if (cur == NV) fail("too many parts after commas");
-            pend[cur++] = p;
-            part[cur] = p + 1;
+            part[++cur] = p + 1;
         }
     }
-    pend[cur] = p;
+    part[cur + 1] = p + 1;
     a = input;
-    b = pend[0];
+    b = part[1] - 1;
     for (p = a; p < b && *p == ' '; p++);
     if (p == b) fail("type an expression first");
 
     if (cmd == CMD_SYSTEM) {
-        do_system(part, pend, cur + 1);
+        do_system(part, cur + 1);
         os_PopErrorHandler();
         return;
     }
@@ -3911,7 +3911,7 @@ void cas_run(int cmd, const char *input)
             p++;
         }
     }
-    for (i = 1; i <= cur; i++) parse_value(part[i], pend[i]);
+    for (i = 1; i <= cur; i++) parse_value(part[i], part[i + 1] - 1);
     if (cmd == CMD_SOLVE && cur) fail("solve finds the values itself, drop the , x=");
     if (rel && cmd != CMD_SOLVE) {
         if (rel != '=' || cmd == CMD_EXPAND || cmd == CMD_FACTOR || cmd == CMD_DERIV) fail("use solve for equations and inequalities");
