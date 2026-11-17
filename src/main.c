@@ -247,11 +247,6 @@ static void show(int cmd)
     scroll = 0;
 }
 
-static int isrel(char c)
-{
-    return c == '=' || c == '<' || c == '>' || c == G_LE[0] || c == G_GE[0];
-}
-
 /* = or an inequality before the first top-level comma; the ones after it are values like x=3 */
 static int equation(void)
 {
@@ -260,7 +255,7 @@ static int equation(void)
         if (in[i] == '(') depth++;
         else if (in[i] == ')') depth--;
         else if (in[i] == ',' && depth <= 0) return 0;
-        else if (isrel(in[i])) return 1;
+        else if (strchr("=<>" G_LE G_GE, in[i])) return 1;
     }
     return 0;
 }
