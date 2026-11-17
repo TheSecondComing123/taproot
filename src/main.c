@@ -136,46 +136,42 @@ static int input_rows(void)
     return r > 3 ? 3 : r;
 }
 
-/* walks every wrapped output row, answers first, then a divider and the steps; draws the visible
-   ones, returns the total */
-static int layout(int top, int vis, int draw)
+/* walks every wrapped output row, answers first, then a divider and the steps; draws the ones in
+   [scroll, scroll + vis), returns the total */
+static int layout(int top, int vis)
 {
-    static int order[CAS_MAXLINES + 1];
-    int i, j, n = 0, row = 0, keys = shown == KEYS;
-    for (i = 0; i < nout; i++)
-        if (keys || kinds[i] != L_STEP) order[n++] = i;
-    if (n < nout) order[n++] = -1;
-    for (i = 0; i < nout; i++)
-        if (!keys && kinds[i] == L_STEP) order[n++] = i;
-    for (j = 0; j < n; j++, row++) {
-        const char *s, *key;
-        int k, style, first = 1;
-        uint8_t color;
-        if (order[j] < 0) {
-            if (draw && row >= scroll && row < scroll + vis) {
-                int y = top + (row - scroll) * RH;
-                text("steps", 5, X0, y, C_DIM, 0);
-                gfx_SetColor(C_SURF);
-                gfx_HorizLine(X0 + 6 * CW, y + 8, 320 - 2 * X0 - 6 * CW);
+    int i, pass, row = 0, keys = shown == KEYS, divided = 0;
+    for (pass = 0; pass < 2; pass++)
+        for (i = 0; i < nout; i++) {
+            const char *s = lines[i], *key;
+            int k = kinds[i], style, ind;
+            uint8_t color;
+            if ((keys || k != L_STEP) == pass) continue;
+            if (pass && !divided) {
+                divided = 1;
+                if ((unsigned)(row - scroll) < (unsigned)vis) {
+                    int y = top + (row - scroll) * RH;
+                    text("steps", 5, X0, y, C_DIM, 0);
+                    gfx_SetColor(C_SURF);
+                    gfx_HorizLine(X0 + 6 * CW, y + 8, 320 - 2 * X0 - 6 * CW);
+                }
+                row++;
             }
-            continue;
-        }
-        s = lines[order[j]];
-        k = kinds[order[j]];
-        style = (k == L_RESULT || k == L_ERROR ? BOLD : 0) | (keys ? 0 : PRETTY);
-        color = k == L_RESULT ? accent[shown] : k == L_APPROX ? C_DIM : k == L_ERROR ? C_RED : C_TEXT;
-        key = keys && k == L_STEP ? strstr(s, "  ") : 0;
-        for (;; row++, first = 0) {
-            int ind = first ? 0 : 2, m = cut(s, COLS - ind), lab = key && first ? key - s : 0;
-            if (draw && row >= scroll && row < scroll + vis) {
-                int y = top + (row - scroll) * RH;
-                text(s, lab, X0, y, C_SUB, 0);
-                text(s + lab, m - lab, X0 + (ind + lab) * CW, y, color, style);
+            style = (k == L_RESULT || k == L_ERROR ? BOLD : 0) | (keys ? 0 : PRETTY);
+            color = k == L_RESULT ? accent[shown] : k == L_APPROX ? C_DIM : k == L_ERROR ? C_RED : C_TEXT;
+            key = keys && k == L_STEP ? strstr(s, "  ") : 0;
+            for (ind = 0;; row++, ind = 2, key = 0) {
+                int m = cut(s, COLS - ind), lab = key ? key - s : 0;
+                if ((unsigned)(row - scroll) < (unsigned)vis) {
+                    int y = top + (row - scroll) * RH;
+                    text(s, lab, X0, y, C_SUB, 0);
+                    text(s + lab, m - lab, X0 + (ind + lab) * CW, y, color, style);
+                }
+                s += m;
+                if (!*s) break;
             }
-            s += m;
-            if (!*s) break;
+            row++;
         }
-    }
     return row;
 }
 
@@ -212,10 +208,10 @@ static void draw(void)
     if (shown < 0) {
         hint(top);
     } else {
-        total = layout(top, vis, 0);
+        total = layout(top, 0);
         if (scroll > total - vis) scroll = total - vis;
         if (scroll < 0) scroll = 0;
-        layout(top, vis, 1);
+        layout(top, vis);
         if (total > vis) {
             int track = vis * RH, h = track * vis / total;
             gfx_SetColor(C_SURF);
