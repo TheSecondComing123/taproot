@@ -3851,7 +3851,7 @@ void cas_run(int cmd, const char *input)
 {
     static void (*const run[])(Rat) = { do_expand, do_factor, 0, do_deriv, do_vertex, do_zeros, 0, do_inverse };
     const char *part[NV + 2], *at = 0, *p, *a, *b;
-    int cur = 0, depth = 0, i, rel = 0, rlen = 1;
+    int cur = 0, depth = 0, i, rel = '=', rlen = 1;
     Rat r;
     Poly *q;
 
@@ -3899,14 +3899,14 @@ void cas_run(int cmd, const char *input)
         os_PopErrorHandler();
         return;
     }
-    /* the one relation: '=', '<', '>', 'L' for <=, 'G' for >= */
+    /* at is the one relation, rel its code: '=', '<', '>', 'L' for <=, 'G' for >= */
     for (depth = 0, p = a; p < b; p++) {
         static const char sym[] = "=<>" G_LE G_GE, code[] = "=<>LG";
         const char *k = strchr(sym, *p);
         depth += (*p == '(') - (*p == ')');
         if (!k) continue;
         if (depth) fail("= and inequality signs can't go inside ( )");
-        if (rel) fail("only one = or inequality sign allowed");
+        if (at) fail("only one = or inequality sign allowed");
         rel = code[k - sym];
         at = p;
         if ((rel == '<' || rel == '>') && p + 1 < b && p[1] == '=') {
@@ -3917,7 +3917,7 @@ void cas_run(int cmd, const char *input)
     }
     for (i = 1; i <= cur; i++) parse_value(part[i], part[i + 1] - 1);
     if (cmd == CMD_SOLVE && cur) fail("solve finds the values itself, drop the , x=");
-    if (rel && cmd != CMD_SOLVE) {
+    if (at && cmd != CMD_SOLVE) {
         if (rel != '=' || cmd == CMD_EXPAND || cmd == CMD_FACTOR || cmd == CMD_DERIV) fail("use solve for equations and inequalities");
         /* y=... : the left side must be one letter */
         while (*a == ' ') a++;
@@ -3927,7 +3927,7 @@ void cas_run(int cmd, const char *input)
         a++;
     }
     sides(&r, a, cmd == CMD_SOLVE ? at : 0, rlen, b, rel == '=');
-    if (cmd == CMD_SOLVE) do_solve(r, rel ? rel : '=');
+    if (cmd == CMD_SOLVE) do_solve(r, rel);
     else run[cmd](r);
     os_PopErrorHandler();
 }
