@@ -2530,14 +2530,15 @@ static int rational_quadratic(int mult)
    into two, numerically otherwise */
 static void leftover(int v)
 {
-    int nf = sqfree(), i, at;
+    int nf = sqfree(), i;
+    Q *f = fac;
     if (nf < 1 || (nf == 1 && fmul[0] == 1)) {
         exact_or_numeric(v, 1);
         return;
     }
     step("some factors repeat, so solve each once");
-    for (at = 0, i = 0; i < nf; at += fdeg[i++] + 1) {
-        toip(fac + at, fdeg[i]);
+    for (i = 0; i < nf; f += fdeg[i++] + 1) {
+        toip(f, fdeg[i]);
         say(L_STEP | OPEN, "(");
         wip(v);
         say(MORE, ")^%d", fmul[i]);
