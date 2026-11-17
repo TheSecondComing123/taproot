@@ -1576,26 +1576,26 @@ static char pstr[1024];
 static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
 {
     Poly *r;
+    const Term *t, *te = p->t + p->n;
     int32_t g = 0, l = 1;
-    int i, v, show = 0;
+    int v;
     for (v = 0; v < NV; v++) m[v] = MAXE;
-    for (i = 0; i < p->n; i++) {
-        g = gcd(g, p->t[i].c.n);
-        l = lcm(l, p->t[i].c.d);
+    for (t = p->t; t < te; t++) {
+        g = gcd(g, t->c.n);
+        l = lcm(l, t->c.d);
         for (v = 0; v < NV; v++)
-            if (p->t[i].e[v] < m[v]) m[v] = p->t[i].e[v];
+            if (t->e[v] < m[v]) m[v] = t->e[v];
     }
     qnorm(k, p->t[0].c.n < 0 ? -g : g, l);
     r = pnew();
-    for (i = 0; i < p->n; i++) {
+    for (t = p->t; t < te; t++) {
         uint8_t e[NV];
         Q c;
-        for (v = 0; v < NV; v++) e[v] = p->t[i].e[v] - m[v];
-        qdiv(&c, &p->t[i].c, k);
+        for (v = 0; v < NV; v++) e[v] = t->e[v] - m[v];
+        qdiv(&c, &t->c, k);
         addterm(r, &c, e);
     }
-    for (v = 0; v < NV; v++) show |= m[v];
-    if (r->n > 1 && (show || !qone(k))) {
+    if (r->n > 1 && (hasvars(m) || !qone(k))) {
         say(L_STEP | OPEN, "GCF ");
         wmono(k, m, 1);
         say(MORE, ": %p", r);
@@ -1643,21 +1643,19 @@ static void sortll(int32_t *a, int n)
    ponytail: trial division, so a prime factor past ~10^10 still takes minutes on the calc (clear stops it) */
 static int divisors(int32_t n, int32_t *out)
 {
-    int32_t p, m;
-    int k = 1, i, base, e, tick = 0;
+    int32_t p, *o;
+    int k = 1, i, e, tick = 0;
     if (n < 0) n = -n;
     out[0] = 1;
     for (p = 2; n > 1; p += 1 + (p > 2)) {
         if (!(++tick & 4095)) poll();
         if (p > n / p) p = n;
-        if (n % p) continue;
         for (e = 0; n % p == 0; e++) n /= p;
+        if (!e) continue;
         if (k * (e + 1) > 256) return -1;
-        base = k;
-        for (m = 1; e--;) {
-            m *= p;
-            for (i = 0; i < base; i++) out[k++] = out[i] * m;
-        }
+        /* o[-k] is the same divisor with one p fewer */
+        for (i = k * e, o = out + k; i > 0; i--, o++) *o = o[-k] * p;
+        k *= e + 1;
     }
     sortll(out, k);
     return k;
@@ -1692,26 +1690,20 @@ static int32_t psum(int sgn)
 static int try_root(int32_t p, int32_t q)
 {
     static int32_t b[MAXD + 1];
-    int k;
-    if (setjmp(soft_jmp)) {
-        soft = 0;
-        return 0;
-    }
-    soft = 1;
-    b[ideg] = 0;
-    for (k = ideg; k >= 1; k--) {
-        int32_t t = ckadd(ip[k], ckmul(p, b[k]));
-        if (t % q) break;
-        b[k - 1] = t / q;
-    }
-    if (k || ckadd(ip[0], ckmul(p, b[0]))) {
-        soft = 0;
-        return 0;
+    int k, ok = 0;
+    if (!setjmp(soft_jmp)) {
+        soft = 1;
+        b[ideg] = 0;
+        for (k = ideg; k >= 1; k--) {
+            int32_t t = ckadd(ip[k], ckmul(p, b[k]));
+            if (t % q) break;
+            b[k - 1] = t / q;
+        }
+        ok = !k && !ckadd(ip[0], ckmul(p, b[0]));
     }
     soft = 0;
-    for (k = 0; k < ideg; k++) ip[k] = b[k];
-    ideg--;
-    return 1;
+    if (ok) memcpy(ip, b, ideg-- * sizeof *ip);
+    return ok;
 }
 
 static void wcandidates(int n0, int nn)
