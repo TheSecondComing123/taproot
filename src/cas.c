@@ -1706,23 +1706,21 @@ static int try_root(int32_t p, int32_t q)
     return ok;
 }
 
+/* counts the coprime candidates, then lists them if there are at most 4 */
 static void wcandidates(int n0, int nn)
 {
-    int i, j, count = 0;
-    for (i = 0; i < nn && count <= 4; i++)
-        for (j = 0; j < n0 && count <= 4; j++) count += gcd(dv0[j], dvn[i]) == 1;
-    if (count > 4) {
-        wputs("none of them work");
-        return;
-    }
-    wputs("none of ");
-    for (i = 0; i < nn; i++)
-        for (j = 0; j < n0; j++)
-            if (gcd(dv0[j], dvn[i]) == 1) {
+    int i, j, k, show;
+    for (show = 0; show < 2; show++) {
+        for (k = i = 0; i < nn && k <= 4; i++)
+            for (j = 0; j < n0 && k <= 4; j++) {
                 Q c = { dv0[j], dvn[i] };
-                say(MORE | OPEN, --count ? G_PM "%q, " : G_PM "%q", &c);
+                if (gcd(c.n, c.d) != 1) continue;
+                if (show) say(MORE | OPEN, k ? ", " G_PM "%q" : "none of " G_PM "%q", &c);
+                k++;
             }
-    wputs(" work");
+        if (k > 4) break;
+    }
+    wputs(k > 4 ? "none of them work" : " work");
 }
 
 static void find_roots(int v)
