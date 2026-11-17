@@ -82,9 +82,8 @@ static int nout, vis;
 static const char *msg;
 
 /* one byte per pixel row, bit 0 on the left: testing bit 0 compiles to one instruction, bit 7 to a signed compare */
-static void glyph(const uint8_t *g, int h, int x, int y, uint8_t color)
+static void glyph(const uint8_t *g, int h, uint8_t *p, uint8_t color)
 {
-    uint8_t *p = &gfx_vbuffer[y][x];
     for (; h--; p += 320) {
         uint8_t b = *g++, *q = p;
         for (; b; b >>= 1, q++)
@@ -101,6 +100,7 @@ static int digit(char c)
 static void text(const char *s, int n, int x, int y, uint8_t color, int style)
 {
     int up = 0, bar = 0;
+    uint8_t *p = &gfx_vbuffer[y][x];
     for (; n-- > 0 && *s; s++) {
         uint8_t c = *s;
         if (style & PRETTY && c == '^' && (digit(s[1]) || (s[1] == '-' && digit(s[2])))) {
@@ -108,15 +108,15 @@ static void text(const char *s, int n, int x, int y, uint8_t color, int style)
             continue;
         }
         if (up && (digit(c) || s[-1] == '^')) {
-            glyph(sup[c == '-' ? 10 : c - '0'], 6, x, y + SUPY, color);
-            x += 5;
+            glyph(sup[c == '-' ? 10 : c - '0'], 6, p + SUPY * 320, color);
+            p += 5;
             continue;
         }
         up = 0;
         bar = style & PRETTY && (c == G_SQRT[0] || (bar && (digit(c) || (c == '-' && s[-1] == G_SQRT[0]))));
-        if (bar && c != G_SQRT[0]) memset(&gfx_vbuffer[y][x], color, CW);
-        if (c != ' ') glyph(font[style & BOLD][c > ' ' ? c - 0x12 : c > 8 ? c - 9 : c - 1], 14, x, y, color);
-        x += CW;
+        if (bar && c != G_SQRT[0]) memset(p, color, CW);
+        if (c != ' ') glyph(font[style & BOLD][c > ' ' ? c - 0x12 : c > 8 ? c - 9 : c - 1], 14, p, color);
+        p += CW;
     }
 }
 
