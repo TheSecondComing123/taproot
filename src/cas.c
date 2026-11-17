@@ -1691,12 +1691,6 @@ static int32_t psum(int sgn)
     return t;
 }
 
-/* d doesn't divide a, where only 0 divides 0 */
-static int nodiv(int32_t a, int32_t d)
-{
-    return d ? a % d != 0 : a != 0;
-}
-
 /* divides ip by (qx - p) when p/q is a root */
 static int try_root(int32_t p, int32_t q)
 {
@@ -1733,26 +1727,22 @@ static void wcandidates(int n0, int nn)
         return;
     }
     wputs("none of ");
-    for (i = 0; i < nn; i++) {
-        for (j = 0; j < n0; j++) {
-            if (gcd(dv0[j], dvn[i]) != 1) continue;
-            if (--count < 0) break;
-            wputs(G_PM);
-            wfrac(dv0[j], dvn[i]);
-            if (count) wputs(", ");
-        }
-    }
+    for (i = 0; i < nn; i++)
+        for (j = 0; j < n0; j++)
+            if (gcd(dv0[j], dvn[i]) == 1) {
+                Q c = { dv0[j], dvn[i] };
+                say(MORE | OPEN, --count ? G_PM "%q, " : G_PM "%q", &c);
+            }
     wputs(" work");
 }
 
 static void find_roots(int v)
 {
-    int i, j, sgn, n0 = 0, nn = 0, found, any = 0, ch = vars[v];
+    int i, j, sgn, n0 = 0, nn = 0, any = 0, ch = vars[v];
     int32_t p1, pm1, bound;
     if (ideg < 2) return;
     say(L_STEP, "rational roots " G_PM "p/q: p|%l, q|%l", ip[0] < 0 ? -ip[0] : ip[0], ip[ideg]);
     while (ideg >= 2) {
-        found = 0;
         n0 = divisors(ip[0], dv0);
         nn = divisors(ip[ideg], dvn);
         if (n0 < 0 || nn < 0) {
@@ -1761,30 +1751,32 @@ static void find_roots(int v)
         }
         /* cheap filters: every root is within the cauchy bound, and p/q a root means (q-p) | P(1), (q+p) | P(-1) */
         for (bound = 1, i = 0; i < ideg; i++) {
-            int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
+            int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = (a + ip[ideg] - 1) / ip[ideg] + 1;
             if (c > bound) bound = c;
         }
         p1 = psum(1);
         pm1 = psum(-1);
-        for (i = 0; i < nn && !found; i++) {
-            for (j = 0; j < n0 && !found; j++) {
+        for (i = 0; i < nn; i++) {
+            for (j = 0; j < n0; j++) {
                 if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
-                for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
-                    int32_t p = sgn * dv0[j], q = dvn[i];
+                for (sgn = 0; sgn < 2; sgn++) {
+                    int32_t p = sgn ? -dv0[j] : dv0[j], q = dvn[i];
                     Q r = { p, q }, m = { q, 1 }, b = { -p, 1 };
-                    if (nodiv(p1, q - p) || nodiv(pm1, q + p)) continue;
+                    if ((q == p ? p1 : p1 % (q - p)) || (q == -p ? pm1 : pm1 % (q + p))) continue;
                     poll();
                     if (!try_root(p, q)) continue;
-                    found = any = 1;
+                    any = 1;
                     add_root(p, q, 1);
                     say(L_STEP, "%c=%q: P(%q)=0, so (%L) is a factor", ch, &r, &r, &m, ch, &b);
                     say(L_STEP | OPEN, "divide by (%L): ", &m, ch, &b);
                     wip(v);
                     end();
+                    goto next;
                 }
             }
         }
-        if (!found) break;
+        break;
+    next:;
     }
     if (ideg == 1) {
         Q m = { ip[1], 1 }, b = { ip[0], 1 };
@@ -1848,6 +1840,13 @@ static void wbq(int i, int v)
     if (bqmult > 1) wputs("^2");
 }
 
+static void swap2(int32_t *a)
+{
+    int32_t t = a[0];
+    a[0] = a[1];
+    a[1] = t;
+}
+
 /* x^4 + ... with only even powers whose x^2-quadratic has rational roots */
 static int biquad(int v)
 {
@@ -1866,12 +1865,8 @@ static int biquad(int v)
         bqb[i] = u.d;
     }
     if (ckmul(bqa[0] < 0 ? -bqa[0] : bqa[0], bqb[1]) > ckmul(bqa[1] < 0 ? -bqa[1] : bqa[1], bqb[0])) {
-        int32_t t = bqa[0];
-        bqa[0] = bqa[1];
-        bqa[1] = t;
-        t = bqb[0];
-        bqb[0] = bqb[1];
-        bqb[1] = t;
+        swap2(bqa);
+        swap2(bqb);
     }
     nbq = sq ? 2 : 1;
     bqmult = sq ? 1 : 2;
