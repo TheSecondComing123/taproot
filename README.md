@@ -51,7 +51,7 @@ when a problem is too big or too sensitive to answer right, taproot tells you th
 | shows the steps | yes | no | no | no |
 | exact factor and solve | yes | no, decimals only | no, it can't factor or solve | yes |
 | type the problem right in the program | yes | n/a | no, it goes in Y1 first | yes |
-| fits next to your other stuff | yes, ~76 kb | built in | yes | no, the install wipes your archive |
+| fits next to your other stuff | yes, ~80 kb | built in | yes | no, the install wipes your archive |
 
 sources: [pineapplecas](https://github.com/nathanfarlow/PineappleCAS), [khicas for the 84](https://xcas.univ-grenoble-alpes.fr/backup/ti/khicas84.html), the [ti-84 plus ce guidebook](https://education.ti.com/html/webhelp/EG_TI84PlusCE/EN/content/home_84plusce_v5.7.HTML).
 
@@ -63,14 +63,14 @@ sources: [pineapplecas](https://github.com/nathanfarlow/PineappleCAS), [khicas f
 - `enter` solves when there's an `=` or an inequality, otherwise it repeats your last command.
 - on an empty line, any command key runs on your last answer, so expand, then factor, then solve is three key presses.
 - `2nd enter` brings back earlier inputs. `▲ ▼` scroll the steps.
-- `graph` shows every key on one screen. `2nd mode` quits.
+- `graph` explains every key. `2nd mode` quits.
 
 ## install
 
 1. get the ce c libraries ([clibs](https://github.com/CE-Programming/libraries/releases)) on your calculator, if they aren't there already.
 2. send all three files from the release (`TAPROOT.8xp` and its two appvars) with ti connect ce or tilp.
 3. on os 5.5 and newer, run it through [arTIfiCE](https://yvantt.github.io/arTIfiCE/).
-4. taproot needs about 82 kb of free ram while it runs. archive your other programs if it says memory.
+4. taproot needs about 86 kb of free ram while it runs. archive your other programs if it says memory.
 
 ## build it yourself
 
