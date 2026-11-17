@@ -3549,7 +3549,8 @@ static void do_zeros(Rat r)
 
 static void do_inverse(Rat r)
 {
-    static Q a, b, c, h, k, t, one;
+    static Q a, b, c, h, k, t;
+    static const Q one = { 1, 1 };
     Q *A = da + 1, *B = da, *C = db + 1, *D = db;
     int v = ratvar(r), dn, dd, x;
     Rat f;
@@ -3557,7 +3558,6 @@ static void do_inverse(Rat r)
     x = vars[v];
     dn = pdeg(r.n, v);
     dd = r.d ? pdeg(r.d, v) : 0;
-    qset(&one, 1);
     say(L_STEP, "y = %r, swap %c and y, solve for y", r, x);
     if (dn == 2 && !dd) {
         need_quadratic(r, &a, &b, &c);
