@@ -1314,6 +1314,7 @@ static Rat patom(void)
 {
     int ch = peek();
     Rat r;
+    Q q;
     if (isdigit(ch) || ch == '.') {
         int32_t n = 0, d = 1;
         int digits = 0, dot = 0;
@@ -1330,17 +1331,12 @@ static Rat patom(void)
         }
         if (!digits) fail("a lone . isn't a number");
         if (s < send && *s == '.') fail("a number has two decimal points");
-        {
-            Q q;
-            qnorm(&q, n, d);
-            return rpoly(pconst(&q));
-        }
-    }
-    if (isalpha(ch)) {
+        qnorm(&q, n, d);
+        r.n = pconst(&q);
+    } else if (isalpha(ch)) {
         s++;
-        return rpoly(pvar(varidx(tolower(ch))));
-    }
-    if (ch == '(') {
+        r.n = pvar(varidx(tolower(ch)));
+    } else if (ch == '(') {
         s++;
         deeper();
         r = pexpr();
@@ -1348,10 +1344,13 @@ static Rat patom(void)
         s++;
         nest--;
         return r;
+    } else {
+        if (!ch) fail("the expression ends too early");
+        if (ch == ')') fail("extra )");
+        unexpected(ch);
     }
-    if (!ch) fail("the expression ends too early");
-    if (ch == ')') fail("extra )");
-    unexpected(ch);
+    r.d = 0;
+    return r;
 }
 
 static Rat ppower(void)
@@ -1533,7 +1532,8 @@ static Rat psubst(const Poly *p)
             tm.e[v] = 0;
         }
         if (v < NV) continue;
-        t = rpoly(pnew());
+        t.n = pnew();
+        t.d = 0;
         addterm(t.n, &tm.c, tm.e);
         for (v = 0; v < NV; v++) {
             if (!assigned[v] || !pt->e[v]) continue;
