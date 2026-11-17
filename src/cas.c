@@ -1304,6 +1304,14 @@ static void deeper(void)
     if (++nest > 24) fail("too many nested ( or signs");
 }
 
+/* *a = *r, freeing the old *a and *b */
+static void rnext(Rat *a, Rat *b, const Rat *r)
+{
+    rfree(*a);
+    rfree(*b);
+    *a = *r;
+}
+
 static Rat patom(void)
 {
     int ch = peek();
@@ -1362,9 +1370,8 @@ static Rat ppower(void)
     }
     if ((q.n > MAXPOW || q.n < -MAXPOW) && (b.d || b.n->n > 1 || q.n > MAXE || q.n < -MAXE)) fail("exponent too big (max 60)");
     r = rpow(b, (int)q.n);
-    rfree(b);
-    rfree(ex);
-    return r;
+    rnext(&b, &ex, &r);
+    return b;
 }
 
 static Rat punary(void)
@@ -1411,9 +1418,7 @@ static Rat pterm(void)
         } else {
             return a;
         }
-        rfree(a);
-        rfree(b);
-        a = r;
+        rnext(&a, &b, &r);
     }
 }
 
@@ -1436,9 +1441,7 @@ static Rat pexpr(void)
         fracs += !!b.d;
         mixed_ok &= proper(b);
         r = radd(a, b, ch == '-', 1);
-        rfree(a);
-        rfree(b);
-        a = r;
+        rnext(&a, &b, &r);
     }
     /* x+1/x is already quotient plus remainder; dividing it back out would just repeat it */
     if (top) typed_mixed = terms > 1 && fracs == 1 && mixed_ok;
@@ -1520,27 +1523,25 @@ static Rat psubst(const Poly *p)
     Rat acc = rpoly(pnew()), t, u, pw;
     int i, v;
     for (i = 0; i < p->n; i++) {
-        Term tm = p->t[i];
+        const Term *pt = &p->t[i];
+        Term tm = *pt;
         Q zq;
-        int zero = 0;
-        for (v = 0; v < NV; v++) zero |= assigned[v] && tm.e[v] && isnum(val[v], &zq) && !zq.n;
-        if (zero) continue;
-        for (v = 0; v < NV; v++)
-            if (assigned[v]) tm.e[v] = 0;
+        for (v = 0; v < NV; v++) {
+            if (!assigned[v]) continue;
+            if (tm.e[v] && !val[v].d && isconst(val[v].n, &zq) && !zq.n) break;
+            tm.e[v] = 0;
+        }
+        if (v < NV) continue;
         t = rpoly(pnew());
         addterm(t.n, &tm.c, tm.e);
         for (v = 0; v < NV; v++) {
-            if (!assigned[v] || !p->t[i].e[v]) continue;
-            pw = rpow(val[v], p->t[i].e[v]);
+            if (!assigned[v] || !pt->e[v]) continue;
+            pw = rpow(val[v], pt->e[v]);
             u = rmul(t, pw);
-            rfree(t);
-            rfree(pw);
-            t = u;
+            rnext(&t, &pw, &u);
         }
         u = radd(acc, t, 0, 0);
-        rfree(acc);
-        rfree(t);
-        acc = u;
+        rnext(&acc, &t, &u);
     }
     return acc;
 }
@@ -1551,9 +1552,8 @@ static Rat rsubst(Rat r)
     if (!r.d) return n;
     d = psubst(r.d);
     q = rdiv(n, d);
-    rfree(n);
-    rfree(d);
-    return q;
+    rnext(&n, &d, &q);
+    return n;
 }
 
 /* ---------- roots of one-variable polynomials ---------- */
