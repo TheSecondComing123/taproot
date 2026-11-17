@@ -199,8 +199,9 @@ static void draw(void)
     for (r = 0; r < rows; r++) text(in + r * PER, PER, X0, 4 + r * RH, C_TEXT, 0);
     {
         int x = X0 + cur % PER * CW, y = 4 + cur / PER * RH;
-        char g = mode == M_2ND ? '\x05' : mode == M_ALPHA ? 'a' : mode == M_LOCK ? 'A' : in[cur];
-        gfx_SetColor(mode == M_2ND ? C_BLUE : mode ? C_GREEN : C_YELLOW);
+        static const uint8_t color[] = { C_YELLOW, C_BLUE, C_GREEN, C_GREEN };
+        char g = mode ? (" \x05" "aA")[mode] : in[cur];
+        gfx_SetColor(color[mode]);
         gfx_FillRectangle(x, y, CW, 14);
         if (g) text(&g, 1, x, y, C_CRUST, 0);
     }
