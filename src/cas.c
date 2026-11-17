@@ -350,15 +350,12 @@ static void xsqrt(R *r, const R *a) { *r = os_RealSqrt(a); }
 /* v as a real, exact: 10 digits fit the 14-digit mantissa */
 static void rset(R *r, int32_t v)
 {
-    uint32_t u = v < 0 ? -(uint32_t)v : (uint32_t)v;
-    uint8_t d[10];
-    int n = 0, i;
+    uint32_t u = v < 0 ? -(uint32_t)v : (uint32_t)v, t;
+    int i = 0;
     memset(r, 0, sizeof *r);
-    r->exp = (int8_t)0x80;
-    if (!u) return;
-    do d[n++] = u % 10; while (u /= 10);
-    for (i = 0; i < n; i++) r->mant[i / 2] |= d[n - 1 - i] << (i & 1 ? 0 : 4);
-    r->exp = (int8_t)(0x80 + n - 1);
+    for (t = u / 10; t; t /= 10) i++;
+    r->exp = (int8_t)(0x80 + i);
+    for (; u; i--, u /= 10) r->mant[i / 2] |= u % 10 << (i & 1 ? 0 : 4);
     if (v < 0) r->sign = (int8_t)0x80;
 }
 
