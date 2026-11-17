@@ -93,21 +93,16 @@ static void end(void)
 
 static void begin(int kind)
 {
-    int ok = cas_nlines < CAS_MAXLINES && textlen < TEXT - 1;
-    if (kind == L_STEP && quiet) {
-        ok = 0;
-    } else if (kind == L_STEP && (cas_nlines >= STEP_LINES || textlen >= STEP_TEXT)) {
-        if (ok && !hidden) {
+    w = sink;
+    wend = sink + 1;
+    *w = 0;
+    if (cas_nlines >= CAS_MAXLINES || textlen >= TEXT - 1 || (kind == L_STEP && quiet)) return;
+    if (kind == L_STEP && (cas_nlines >= STEP_LINES || textlen >= STEP_TEXT)) {
+        if (!hidden) {
             hidden = 1;
             cas_line[cas_nlines] = "(more steps hidden)";
             cas_kind[cas_nlines++] = L_STEP;
         }
-        ok = 0;
-    }
-    if (!ok) {
-        w = sink;
-        wend = sink + 1;
-        *w = 0;
         return;
     }
     w = text + textlen;
@@ -501,22 +496,22 @@ static int mcmp(const uint8_t *a, const uint8_t *b)
 
 static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
 {
-    uint8_t e[NV];
-    Q c;
+    Term n;
+    Term *t = p->t;
     int i, r;
-    qcpy(&c, c0);
-    memcpy(e, e0, NV);
-    if (iv >= 0 && e[iv] > 1) {
-        if (e[iv] & 2) c.n = -c.n; /* i^2 = -1 */
-        e[iv] &= 1;
+    qcpy(&n.c, c0);
+    memcpy(n.e, e0, NV);
+    if (iv >= 0 && n.e[iv] > 1) {
+        if (n.e[iv] & 2) n.c.n = -n.c.n; /* i^2 = -1 */
+        n.e[iv] &= 1;
     }
-    if (!c.n) return;
-    for (i = 0; i < p->n; i++) {
-        r = mcmp(p->t[i].e, e);
+    if (!n.c.n) return;
+    for (i = 0; i < p->n; i++, t++) {
+        r = mcmp(t->e, n.e);
         if (r == 0) {
-            qadd(&p->t[i].c, &p->t[i].c, &c);
-            if (!p->t[i].c.n) {
-                memmove(&p->t[i], &p->t[i + 1], (p->n - i - 1) * sizeof(Term));
+            qadd(&t->c, &t->c, &n.c);
+            if (!t->c.n) {
+                memmove(t, t + 1, (p->n - i - 1) * sizeof(Term));
                 p->n--;
             }
             return;
@@ -524,9 +519,8 @@ static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
         if (r > 0) break;
     }
     if (p->n == MAXT) fail("too many terms (max 64)");
-    memmove(&p->t[i + 1], &p->t[i], (p->n - i) * sizeof(Term));
-    qcpy(&p->t[i].c, &c);
-    memcpy(p->t[i].e, e, NV);
+    memmove(t + 1, t, (p->n - i) * sizeof(Term));
+    *t = n;
     p->n++;
 }
 
@@ -601,13 +595,11 @@ static int isconst(const Poly *p, Q *c)
     return 0;
 }
 
+/* either may be 0, for a missing bottom. terms have no padding, so bytes compare as fields */
 static int pequal(const Poly *a, const Poly *b)
 {
-    int i;
-    if (a->n != b->n) return 0;
-    for (i = 0; i < a->n; i++)
-        if (a->t[i].c.n != b->t[i].c.n || a->t[i].c.d != b->t[i].c.d || memcmp(a->t[i].e, b->t[i].e, NV)) return 0;
-    return 1;
+    if (!a || !b) return a == b;
+    return a->n == b->n && !memcmp(a->t, b->t, a->n * sizeof(Term));
 }
 
 static int hasi(const Poly *p)
@@ -1090,9 +1082,7 @@ static int fold(Rat *r)
     if (!r->d) return 1;
     if (r->n->n && !isconst(r->d, &c)) return 0;
     if (r->n->n) {
-        Q one;
-        qset(&one, 1);
-        qdiv(&c, &one, &c);
+        qnorm(&c, c.d, c.n);
         replace(&r->n, pscale(r->n, &c));
     }
     replace(&r->d, 0);
@@ -1156,10 +1146,9 @@ static Rat radd(Rat a, Rat b, int neg, int shown)
 {
     Rat r;
     Poly *x, *y;
-    if (!a.d && !b.d) return rpoly(padd(a.n, b.n, neg));
-    if (a.d && b.d && pequal(a.d, b.d)) {
+    if (pequal(a.d, b.d)) {
         r.n = padd(a.n, b.n, neg);
-        r.d = pcopy(a.d);
+        r.d = dmul(a.d, 0);
     } else {
         x = dmul(a.n, b.d);
         y = dmul(b.n, a.d);
@@ -1239,7 +1228,7 @@ static Poly *binom(const Poly *a, int n)
         }
         term = pnew();
         addterm(term, &coef, e);
-        if (term->n) addterm(r, &term->t[0].c, term->t[0].e);
+        addterm(r, &coef, e);
         say(L_STEP | OPEN, "T%d C(%d,%d)", k + 1, n, k);
         binom_part(A, n - k);
         binom_part(B, k);
