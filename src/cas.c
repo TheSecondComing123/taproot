@@ -3760,17 +3760,18 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
     Rat expr, sub;
     static Q cu, t, x;
     const Term *tm;
+    const uint8_t *ue = 0;
     int i, lo = vars[u < v ? u : v], hi = vars[u < v ? v : u];
     for (i = 0, tm = lin->t; i < lin->n; i++, tm++)
-        if (tm->e[u]) cu = tm->c;
-    /* u = -(lin - cu·u)/cu */
-    expr.n = pnew();
-    for (i = 0, tm = lin->t; i < lin->n; i++, tm++) {
-        if (tm->e[u]) continue;
-        qdiv(&t, &tm->c, &cu);
-        t.n = -t.n;
-        addterm(expr.n, &t, tm->e);
-    }
+        if (tm->e[u]) {
+            cu = tm->c;
+            ue = tm->e;
+        }
+    /* u = -(lin - cu·u)/cu: lin times -1/cu, then cancel the -u that leaves */
+    qnorm(&t, -cu.d, cu.n);
+    expr.n = pscale(lin, &t);
+    qset(&t, 1);
+    addterm(expr.n, &t, ue);
     expr.d = 0;
     say(L_STEP, "from the linear one: %c = %r", vars[u], expr);
     assigned[u] = 1;
