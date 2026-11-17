@@ -3649,13 +3649,13 @@ static void wrow(const Q *m)
 
 static void linear_system(Poly **eq, int n)
 {
-    Q *rows[NV + 1], *m, *pr, f, t;
+    Q *rows[NV + 1], *m, *pr, *q, *r, f, t;
     int i, j, row = 0, piv[NV + 1], col;
     step("as rows:");
     for (i = 0; i < n; i++) {
         const Term *tm = eq[i]->t;
         m = rows[i] = mx[i];
-        for (j = 0; j <= mcols; j++) qset(&m[j], 0);
+        for (q = m; q <= m + mcols; q++) qset(q, 0);
         for (j = 0; j < eq[i]->n; j++, tm++) {
             int k, c = mcols;
             for (k = 0; k < mcols; k++)
@@ -3678,7 +3678,7 @@ static void linear_system(Poly **eq, int n)
         }
         if (!qone(&pr[col])) {
             f = pr[col];
-            for (j = 0; j <= mcols; j++) qdiv(&pr[j], &pr[j], &f);
+            for (q = pr; q <= pr + mcols; q++) qdiv(q, q, &f);
             say(L_STEP | OPEN, "R%d = R%d/%Q: ", row + 1, row + 1, &f);
             wrow(pr);
         }
@@ -3687,9 +3687,9 @@ static void linear_system(Poly **eq, int n)
             f = m[col];
             if (i == row || !f.n) continue;
             f.n = -f.n;
-            for (j = 0; j <= mcols; j++) {
-                qmul(&t, &f, &pr[j]);
-                qadd(&m[j], &m[j], &t);
+            for (q = m, r = pr; q <= m + mcols; q++, r++) {
+                qmul(&t, &f, r);
+                qadd(q, q, &t);
             }
             say(L_STEP | OPEN, "R%d = R%d%TR%d: ", i + 1, i + 1, &f, row + 1);
             wrow(m);
