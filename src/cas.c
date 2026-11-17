@@ -72,12 +72,13 @@ static void wputs(const char *p)
 
 static void wll(int32_t v)
 {
-    char tmp[24];
-    int n = 0;
-    uint32_t u = v < 0 ? -(uint32_t)v : (uint32_t)v;
-    do tmp[n++] = '0' + u % 10; while (u /= 10);
-    if (v < 0) wputc('-');
-    while (n) wputc(tmp[--n]);
+    uint32_t u = v;
+    if (v < 0) {
+        wputc('-');
+        u = -u;
+    }
+    if (u >= 10) wll(u / 10);
+    wputc('0' + u % 10);
 }
 
 static void end(void)
@@ -452,14 +453,13 @@ static void wmono(const Q *c, const uint8_t *e, int first)
 /* m ch + b, for the inverse steps where y is not one of the input's letters; par wraps two terms in () */
 static void wlin(const Q *m, int ch, const Q *b, int par)
 {
-    static const uint8_t none[NV];
     par = par && m->n && b->n;
     if (par) wputc('(');
     if (m->n) {
         wcoef(m, 1, 1);
         wputc(ch);
     }
-    if (b->n || !m->n) wmono(b, none, !m->n);
+    if (b->n || !m->n) wcoef(b, !m->n, 0);
     if (par) wputc(')');
 }
 
@@ -602,12 +602,17 @@ static int pequal(const Poly *a, const Poly *b)
     return a->n == b->n && !memcmp(a->t, b->t, a->n * sizeof(Term));
 }
 
+static int pdeg(const Poly *p, int v)
+{
+    int i, d = -1;
+    for (i = 0; i < p->n; i++)
+        if (p->t[i].e[v] > d) d = p->t[i].e[v];
+    return d;
+}
+
 static int hasi(const Poly *p)
 {
-    int i;
-    for (i = 0; iv >= 0 && i < p->n; i++)
-        if (p->t[i].e[iv]) return 1;
-    return 0;
+    return iv >= 0 && pdeg(p, iv) > 0;
 }
 
 static Poly *padd(const Poly *a, const Poly *b, int neg)
@@ -667,30 +672,25 @@ static Poly *conj(const Poly *a)
 /* one variable used: its index. none: -1. several: -2 */
 static int univar(const Poly *p)
 {
-    int v, i, found = -1;
+    int v, found = -1;
     for (v = 0; v < NV; v++) {
-        for (i = 0; i < p->n; i++) {
-            if (!p->t[i].e[v]) continue;
-            if (found >= 0) return -2;
-            found = v;
-            break;
-        }
+        if (pdeg(p, v) <= 0) continue;
+        if (found >= 0) return -2;
+        found = v;
     }
     return found;
 }
 
-static int pdeg(const Poly *p, int v)
+static void dzero(Q *c)
 {
-    int i, d = -1;
-    for (i = 0; i < p->n; i++)
-        if (p->t[i].e[v] > d) d = p->t[i].e[v];
-    return d;
+    int i;
+    for (i = 0; i <= MAXD; i++) qset(&c[i], 0);
 }
 
 static int todense(const Poly *p, int v, Q *c)
 {
     int i, deg = -1;
-    for (i = 0; i <= MAXD; i++) qset(&c[i], 0);
+    dzero(c);
     for (i = 0; i < p->n; i++) {
         int e = v < 0 ? 0 : p->t[i].e[v];
         if (e > MAXD) fail("degree too high (max 40)");
@@ -775,7 +775,7 @@ static void dstep(Q *n, const Q *den, int dd, Q *q)
 static int ddiv(Q *num, int dn, const Q *den, int dd, Q *quo)
 {
     int i;
-    for (i = 0; i <= MAXD; i++) qset(&quo[i], 0);
+    dzero(quo);
     for (i = dn; i >= dd; i--)
         if (num[i].n) dstep(&num[i - dd], den, dd, &quo[i - dd]);
     for (i = (dn < dd ? dn : dd - 1); i >= 0 && !num[i].n; i--);
@@ -860,12 +860,11 @@ static void wpar(const Poly *p)
 
 static void wlinear(int v, const Q *a)
 {
-    uint8_t e[NV] = { 0 };
     Q t;
     qcpy(&t, a);
     t.n = -t.n;
     wputc(vars[v]);
-    if (t.n) wmono(&t, e, 0);
+    if (t.n) wcoef(&t, 0, 0);
 }
 
 /* a == 0 is a blank cell */
@@ -910,7 +909,7 @@ static void longdiv(Q *num, int dn, const Q *den, int dd, int v, Q *quo)
     Poly *prod, *left;
     int i;
     uint8_t e[NV] = { 0 };
-    for (i = 0; i <= dn - dd; i++) qset(&quo[i], 0);
+    dzero(quo);
     for (i = dn; i >= dd; i--) {
         if (!num[i].n) continue;
         dstep(&num[i - dd], den, dd, &quo[i - dd]);
@@ -929,11 +928,12 @@ static void longdiv(Q *num, int dn, const Q *den, int dd, int v, Q *quo)
 
 static void wrat(Rat r)
 {
-    int top = r.d && r.n->n > 1, bot;
-    if (top) wputc('(');
-    wpoly(r.n);
-    if (top) wputc(')');
-    if (!r.d) return;
+    int bot;
+    if (!r.d) {
+        wpoly(r.n);
+        return;
+    }
+    wpar(r.n);
     bot = !(r.d->n == 1 && qone(&r.d->t[0].c) && univar(r.d) >= 0);
     wputc('/');
     if (bot) wputc('(');
@@ -1022,7 +1022,7 @@ static Poly *pexact(const Poly *n, const Poly *d)
             Q c;
             qdiv(&c, &r->t[0].c, &ld->c);
             addterm(t, &c, e);
-            addterm(q, &t->t[0].c, e);
+            addterm(q, &c, e);
         }
         prod = pmul(t, d);
         nr = padd(r, prod, 1);
@@ -1189,13 +1189,10 @@ static Rat rdiv(Rat a, Rat b)
 
 static void binom_part(const Term *t, int k)
 {
-    int v, bare = qone(&t->c), nvars = 0;
+    int v, deg = 0, bare;
     if (!k) return;
-    for (v = 0; v < NV; v++) {
-        if (t->e[v] > 1) bare = 0;
-        if (t->e[v]) nvars++;
-    }
-    if (nvars != 1) bare = 0;
+    for (v = 0; v < NV; v++) deg += t->e[v];
+    bare = deg == 1 && qone(&t->c);
     if (!bare) wputc('(');
     wmono(&t->c, t->e, 1);
     if (!bare) wputc(')');
