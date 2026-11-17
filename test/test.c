@@ -157,9 +157,11 @@ int main(int argc, char **argv)
     check(S, "x=x", "every value works");
     check(S, "x+y=1", "solve needs one variable");
     check(S, "x^4+5x^2+4=0", "x = " G_PM "i | x = " G_PM "2i");
-    check(S, "x^4-4x^2+1=0", "x = " G_PM G_SQRT "(2+" G_SQRT "3) | x = " G_PM G_SQRT "(2-" G_SQRT "3) | x " G_APPROX " -1.931852 | x " G_APPROX " -0.517638 | x " G_APPROX " 0.517638 | x " G_APPROX " 1.931852");
-    check(S, "x^4+6x^2+7=0", "x = " G_PM "i" G_SQRT "(3-" G_SQRT "2) | x = " G_PM "i" G_SQRT "(3+" G_SQRT "2) | x " G_APPROX " 0" G_PM "1.25928i | x " G_APPROX " 0" G_PM "2.101003i");
-    check(S, "x^4-2x^2-1=0", "x = " G_PM G_SQRT "(1+" G_SQRT "2) | x = " G_PM "i" G_SQRT "(-1+" G_SQRT "2) | x " G_APPROX " -1.553774 | x " G_APPROX " 1.553774 | x " G_APPROX " 0" G_PM "0.643594i");
+    check(S, "x^4-4x^2+1=0", "x = " G_PM G_SQRT "(2+" G_SQRT "3) | x " G_APPROX " " G_PM "1.931852 | x = " G_PM G_SQRT "(2-" G_SQRT "3) | x " G_APPROX " " G_PM "0.517638");
+    check(S, "x^4+6x^2+7=0", "x = " G_PM "i" G_SQRT "(3-" G_SQRT "2) | x " G_APPROX " " G_PM "1.25928i | x = " G_PM "i" G_SQRT "(3+" G_SQRT "2) | x " G_APPROX " " G_PM "2.101003i");
+    check(S, "x^4-2x^2-1=0", "x = " G_PM G_SQRT "(1+" G_SQRT "2) | x " G_APPROX " " G_PM "1.553774 | x = " G_PM "i" G_SQRT "(" G_SQRT "2-1) | x " G_APPROX " " G_PM "0.643594i");
+    check(Z, "x^4-6x^2+7", "x = -" G_SQRT "(3+" G_SQRT "2), crosses | x = -" G_SQRT "(3-" G_SQRT "2), crosses | x = " G_SQRT "(3-" G_SQRT "2), crosses | x = " G_SQRT "(3+" G_SQRT "2), crosses | y-intercept (0, 7) | degree 4, leading coefficient 1 | x" G_TO "-" G_INF ": y" G_TO G_INF ", x" G_TO G_INF ": y" G_TO G_INF);
+    check(E, "x+1/x", "= (x^2+1)/x | x " G_NE " 0");
     check(S, "x^3-2=0", "x " G_APPROX " 1.259921 | x " G_APPROX " -0.629961" G_PM "1.091124i");
     check(S, "3x^2-5x=0", "x = 0 | x = 5/3");
     check(S, "y^2-2=0", "y = " G_PM G_SQRT "2 | y " G_APPROX " " G_PM "1.414214");

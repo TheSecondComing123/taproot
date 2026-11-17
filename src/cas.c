@@ -47,7 +47,7 @@ static Rat val[NV];
 static jmp_buf fail_jmp, soft_jmp;
 static int soft;
 static const char *s, *send;
-static int nest;
+static int nest, typed_mixed;
 static Q da[MAXD + 1], db[MAXD + 1], dq[MAXD + 1], ga[MAXD + 1], gb[MAXD + 1], gc[MAXD + 1];
 /* lcm of every one-variable polynomial divided by: its zeros are the domain restrictions */
 static Poly *dom;
@@ -127,9 +127,12 @@ static void wreal(const R *x);
 #define OPEN 8
 #define MORE 16
 
+static void wcoef(const Q *c0, int first, int hv);
+static void wlin(const Q *m, int ch, const Q *b, int par);
+
 /* one call per output line instead of a run of w* calls: begin a line of this kind (| MORE keeps
    writing the open one), write f with %s %c %d(int) %l(int32_t) %q %Q(Q *) %p(Poly *) %r(Rat)
-   %R(R *), then end it (| OPEN leaves it open) */
+   %R(R *) %M %T(Q *, a term's coefficient) %L %P(Q *m, letter, Q *b: m letter + b), then end it (| OPEN leaves it open) */
 static void say(int kind, const char *f, ...)
 {
     va_list ap;
@@ -150,6 +153,17 @@ static void say(int kind, const char *f, ...)
         case 'p': wpoly(va_arg(ap, const Poly *)); break;
         case 'r': wrat(va_arg(ap, Rat)); break;
         case 'R': wreal(va_arg(ap, const R *)); break;
+        /* a term's coefficient, first or with its sign */
+        case 'M':
+        case 'T': wcoef(va_arg(ap, const Q *), *f == 'M', 1); break;
+        /* m ch + b, P in parentheses */
+        case 'L':
+        case 'P': {
+            const Q *m = va_arg(ap, const Q *);
+            int ch = va_arg(ap, int);
+            wlin(m, ch, va_arg(ap, const Q *), *f == 'P');
+            break;
+        }
         }
     }
     va_end(ap);
@@ -430,22 +444,18 @@ static void wmono(const Q *c, const uint8_t *e, int first)
     wvars(e);
 }
 
-/* m ch + b, for the inverse steps where y is not one of the input's letters */
-static void wlin(const Q *m, int ch, const Q *b)
+/* m ch + b, for the inverse steps where y is not one of the input's letters; par wraps two terms in () */
+static void wlin(const Q *m, int ch, const Q *b, int par)
 {
     static const uint8_t none[NV];
+    par = par && m->n && b->n;
+    if (par) wputc('(');
     if (m->n) {
         wcoef(m, 1, 1);
         wputc(ch);
     }
     if (b->n || !m->n) wmono(b, none, !m->n);
-}
-
-static void wlinpar(const Q *m, int ch, const Q *b)
-{
-    if (m->n && b->n) wputc('(');
-    wlin(m, ch, b);
-    if (m->n && b->n) wputc(')');
+    if (par) wputc(')');
 }
 
 /* a whole-number coefficient, for the many places that build terms from integers */
@@ -1285,6 +1295,7 @@ static int varidx(int ch)
 }
 
 static Rat pexpr(void);
+static int ratvar(Rat r);
 static Rat punary(void);
 
 /* each ( or leading sign recurses ~5 frames; the calc stack is small */
@@ -1406,19 +1417,32 @@ static Rat pterm(void)
     }
 }
 
+static int proper(Rat t)
+{
+    int v = ratvar(t);
+    return !t.d || (v >= 0 && pdeg(t.n, v) < pdeg(t.d, v));
+}
+
 static Rat pexpr(void)
 {
     Rat a = pterm(), b, r;
+    int top = !nest, terms = 1, fracs = !!a.d, mixed_ok = proper(a);
     for (;;) {
         int ch = peek();
-        if (ch != '+' && ch != '-') return a;
+        if (ch != '+' && ch != '-') break;
         s++;
         b = pterm();
+        terms++;
+        fracs += !!b.d;
+        mixed_ok &= proper(b);
         r = radd(a, b, ch == '-', 1);
         rfree(a);
         rfree(b);
         a = r;
     }
+    /* x+1/x is already quotient plus remainder; dividing it back out would just repeat it */
+    if (top) typed_mixed = terms > 1 && fracs == 1 && mixed_ok;
+    return a;
 }
 
 static Rat parse(const char *start, const char *stop)
@@ -1541,8 +1565,9 @@ static int ideg;
 static int32_t dv0[256], dvn[256];
 static int32_t bqa[2], bqb[2];
 static int nbq, bqmult, nquads;
-/* num, k, r, den, mult of x^2 = (num+-k sqrt r)/den when the x^2-quadratic has no rational roots; mult 0 is none */
-static int32_t nest4[5];
+/* num, k, r, den, mult of x^2 = (num+-k sqrt r)/den when the x^2-quadratic has no rational roots (mult 0 is none),
+   then whether the + and the - one are positive */
+static int32_t nest4[7];
 static struct { int32_t a, b, c; int mult; } quads[MAXD / 2 + 1];
 static Cx z[MAXD];
 static int zm[MAXD], nz;
@@ -2367,9 +2392,28 @@ static void dderiv(const Q *c, int deg, Q *out)
     }
 }
 
+/* ax^4+bx^2+c whose x^2-quadratic has irrational roots: x^2 = (num +- k sqrt r)/den, and x is +-sqrt of each */
+static int nested(int v, int mult)
+{
+    int32_t d, sq;
+    if (ideg != 4 || ip[1] || ip[3] || (d = disc(ip[4], ip[2], ip[0])) <= 0) return 0;
+    sq = isqrt(d);
+    if (sq * sq == d) return 0;
+    say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
+    quad_steps(ip[4], ip[2], ip[0], v, 2);
+    quad_parts(ip[4], ip[2], ip[0], &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
+    nest4[4] = mult;
+    /* the two x^2 multiply to c/a and add to -b/a, and a > 0 */
+    nest4[5] = ip[0] < 0 || ip[2] < 0;
+    nest4[6] = ip[0] > 0 && ip[2] < 0;
+    say(L_STEP | OPEN, "%c^2 = ", vars[v]);
+    wradical(nest4[0], nest4[1], nest4[2], 0, nest4[3], 0);
+    end();
+    return 1;
+}
+
 static void exact_or_numeric(int v, int mult)
 {
-    int32_t d;
     if (ideg == 1) {
         add_root(-ip[0], ip[1], mult);
     } else if (ideg == 2) {
@@ -2381,17 +2425,7 @@ static void exact_or_numeric(int v, int mult)
             quads[i].mult = mult;
             quad_steps(quads[i].a, quads[i].b, quads[i].c, v, 1);
         }
-    } else if (ideg == 4 && !ip[1] && !ip[3] && (d = disc(ip[4], ip[2], ip[0])) > 0 && isqrt(d) * isqrt(d) != d) {
-        /* x^2 = (num +- k sqrt r)/den, so x is +-sqrt of each; numeric() still gives the decimals */
-        say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
-        quad_steps(ip[4], ip[2], ip[0], v, 2);
-        quad_parts(ip[4], ip[2], ip[0], &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
-        nest4[4] = mult;
-        say(L_STEP | OPEN, "%c^2 = ", vars[v]);
-        wradical(nest4[0], nest4[1], nest4[2], 0, nest4[3], 0);
-        end();
-        numeric(mult);
-    } else if (ideg >= 1) {
+    } else if (ideg >= 1 && !nested(v, mult)) {
         int n = ideg;
         numeric(mult);
         say(L_STEP, "no exact formula used for degree %d, solving numerically", n);
@@ -2588,6 +2622,45 @@ static void addpt(const R *x, int32_t p, int32_t q, int mult, char tag, const ch
     npts++;
 }
 
+/* sqrt of |num + sg k sqrt r|/den */
+static void nest_val(int sg, R *x)
+{
+    R t;
+    rset(x, nest4[2]);
+    xsqrt(x, x);
+    rset(&t, nest4[1] * sg);
+    xmul(x, x, &t);
+    rset(&t, nest4[0]);
+    xadd(x, x, &t);
+    rset(&t, nest4[3]);
+    xdiv(x, x, &t);
+    rabs(x);
+    xsqrt(x, x);
+}
+
+/* sqrt((num + sg k sqrt r)/den), or i sqrt of minus it, after pre; the root goes first, so sqrt2-1 */
+static void wnest(int sg, const char *pre)
+{
+    int32_t num = nest4[0], den = nest4[3];
+    int pos = nest4[sg > 0 ? 5 : 6];
+    if (!pos) {
+        num = -num;
+        sg = -sg;
+    }
+    say(MORE | OPEN, pos ? "%s" G_SQRT "(" : "%si" G_SQRT "(", pre);
+    if (den != 1) wputc('(');
+    if (num < 0 && sg > 0) {
+        wradical(0, nest4[1], nest4[2], 0, 1, 1);
+        wll(num);
+    } else {
+        wradical(num, nest4[1], nest4[2], 0, 1, sg);
+    }
+    if (den != 1) {
+        say(MORE | OPEN, ")/%l", den);
+    }
+    wputc(')');
+}
+
 static void quadpts(int32_t a, int32_t b, int32_t c, int mult, char tag)
 {
     int32_t num, k, r, den;
@@ -2630,6 +2703,16 @@ static int collect(char tag)
         if ((bqa[i] > 0) != (bqb[i] > 0) || !bqa[i]) continue;
         quadpts(bqb[i], 0, -bqa[i], bqmult, tag);
         total += 2 * bqmult;
+    }
+    for (i = 0; i < 4 && nest4[4]; i++) {
+        R x;
+        if (!nest4[i < 2 ? 5 : 6]) continue;
+        nest_val(i < 2 ? 1 : -1, &x);
+        if (i & 1) x.sign ^= 0x80;
+        pt_begin();
+        wnest(i < 2 ? 1 : -1, i & 1 ? "-" : "");
+        addpt(&x, 0, 0, nest4[4], tag, pt_end());
+        total += nest4[4];
     }
     for (i = 0; i < nz; i++) {
         if (!rzero(&z[i].i)) continue;
@@ -2783,7 +2866,7 @@ static void do_expand(Rat r)
     }
     wres("= ", r);
     v = ratvar(r);
-    if (r.d && v >= 0 && v != iv) mixed(r, v);
+    if (r.d && v >= 0 && v != iv && !typed_mixed) mixed(r, v);
     domain_line();
 }
 
@@ -2971,12 +3054,13 @@ static void solve_results(int v)
     for (i = 0; i < nquads; i++) quad_result(quads[i].a, quads[i].b, quads[i].c, v, quads[i].mult);
     for (i = 0; i < nbq; i++) quad_result(bqb[i], 0, -bqa[i], v, bqmult);
     for (i = 1; nest4[4] && i >= -1; i -= 2) {
-        int32_t num = nest4[0], k = nest4[1], r = nest4[2];
-        /* the sign of num + i k sqrt r; den is positive */
-        int pos = i > 0 ? num > 0 || ckmul(num, num) < ckmul(ckmul(k, k), r) : num > 0 && ckmul(num, num) > ckmul(ckmul(k, k), r);
-        say(L_RESULT | OPEN, pos ? "%c = " G_PM G_SQRT "(" : "%c = " G_PM "i" G_SQRT "(", vars[v]);
-        wradical(pos ? num : -num, k, r, 0, nest4[3], pos ? i : -i);
-        wputc(')');
+        R x;
+        say(L_RESULT | OPEN, "%c = ", vars[v]);
+        wnest(i, G_PM);
+        wmult(nest4[4]);
+        end();
+        nest_val(i, &x);
+        say(L_APPROX | OPEN, nest4[i > 0 ? 5 : 6] ? "%c " G_APPROX " " G_PM "%R" : "%c " G_APPROX " " G_PM "%Ri", vars[v], &x);
         wmult(nest4[4]);
         end();
     }
@@ -3180,13 +3264,15 @@ static void do_solve(Rat r, int rel)
 }
 
 /* "= ..." for d/dx, "d/dy = ..." when the letter isn't x */
-static void wderiv(int v, Rat q)
+/* sq set prints top/(sq)^2 instead of q */
+static void wderiv(int v, Rat q, const Poly *top, const Poly *sq)
 {
     begin(L_RESULT);
     if (vars[v] != 'x') {
         say(MORE | OPEN, "d/d%c ", vars[v]);
     }
-    say(MORE, "= %r", q);
+    if (sq) say(MORE, top->n > 1 ? "= (%p)/(%p)^2" : "= %p/(%p)^2", top, sq);
+    else say(MORE, "= %r", q);
 }
 
 static void do_deriv(Rat r)
@@ -3223,6 +3309,7 @@ static void do_deriv(Rat r)
     if (r.d) {
         Rat q;
         Poly *top;
+        int sq;
         dn = pderiv(r.n, v);
         dd = pderiv(r.d, v);
         begin(L_STEP);
@@ -3239,17 +3326,12 @@ static void do_deriv(Rat r)
             pfree(b);
         }
         rsimp(&q);
-        if (r.d->n > 1 && q.d && pdeg(q.d, v) == 2 * pdeg(r.d, v)) {
-            /* nothing cancelled, so keep the bottom squared the way it's written by hand */
-            begin(L_RESULT);
-            if (vars[v] != 'x') {
-                say(MORE | OPEN, "d/d%c ", vars[v]);
-            }
-            say(MORE, top->n > 1 ? "= (%p)/(%p)^2" : "= %p/(%p)^2", top, r.d);
-        } else {
+        /* nothing cancelled keeps the bottom squared the way it's written by hand */
+        sq = r.d->n > 1 && q.d && pdeg(q.d, v) == 2 * pdeg(r.d, v);
+        if (!sq) {
             say(L_STEP, top->n > 1 ? "= (%p)/(%p)^2, then cancel" : "= %p/(%p)^2, then cancel", top, r.d);
-            wderiv(v, q);
         }
+        wderiv(v, q, top, sq ? r.d : 0);
         if (nassigned()) {
             check_domain();
             say(L_RESULT | OPEN, "at ");
@@ -3280,7 +3362,7 @@ static void do_deriv(Rat r)
         end();
     }
     dn = pderiv(r.n, v);
-    wderiv(v, rpoly(dn));
+    wderiv(v, rpoly(dn), 0, 0);
     if (nassigned()) {
         say(L_RESULT | OPEN, "at ");
         wvalues();
@@ -3544,62 +3626,30 @@ static void do_inverse(Rat r)
         nD = D;
         nD.n = -D.n;
         qset(&zero, 0);
-        say(L_STEP | OPEN, "%c = ", x);
         if (C.n) {
-            wlinpar(&A, 'y', &B);
-            wputc('/');
-            wlinpar(&C, 'y', &D);
-            end();
+            say(L_STEP, "%c = %P/%P", x, &A, 'y', &B, &C, 'y', &D);
             if (D.n) {
-                say(L_STEP | OPEN, "%c(", x);
-                wlin(&C, 'y', &D);
-                wputs(") = ");
-                wlin(&A, 'y', &B);
-                end();
+                say(L_STEP, "%c(%L) = %L", x, &C, 'y', &D, &A, 'y', &B);
+                say(L_STEP, "%M%cy%T%c = %L", &C, x, &D, x, &A, 'y', &B);
+            } else {
+                say(L_STEP, "%M%cy = %L", &C, x, &A, 'y', &B);
             }
-            begin(L_STEP);
-            wcoef(&C, 1, 1);
-            say(MORE | OPEN, "%cy", x);
-            e[v] = 1;
-            if (D.n) wmono(&D, e, 0);
-            wputs(" = ");
-            wlin(&A, 'y', &B);
-            end();
-            begin(L_STEP);
-            wcoef(&C, 1, 1);
-            say(MORE | OPEN, "%cy", x);
             if (A.n) {
-                wcoef(&nA, 0, 1);
-                wputc('y');
-            }
-            wputs(" = ");
-            wlin(&nD, x, &B);
-            end();
-            if (A.n) {
-                say(L_STEP | OPEN, "y(");
-                wlin(&C, x, &nA);
-                wputs(") = ");
-                wlin(&nD, x, &B);
-                end();
+                say(L_STEP, "%M%cy%Ty = %L", &C, x, &nA, &nD, x, &B);
+                say(L_STEP, "y(%L) = %L", &C, x, &nA, &nD, x, &B);
+            } else {
+                say(L_STEP, "%M%cy = %L", &C, x, &nD, x, &B);
             }
         } else {
-            if (!qone(&D)) {
-                wlinpar(&A, 'y', &B);
-                say(MORE | OPEN, "/%q", &D);
-                end();
-                begin(L_STEP);
-                wlin(&D, x, &zero);
-                wputs(" = ");
+            if (qone(&D)) {
+                say(L_STEP, "%c = %L", x, &A, 'y', &B);
+            } else {
+                say(L_STEP, "%c = %P/%q", x, &A, 'y', &B, &D);
+                say(L_STEP, "%L = %L", &D, x, &zero, &A, 'y', &B);
             }
-            wlin(&A, 'y', &B);
-            end();
-            begin(L_STEP);
-            wlin(&A, 'y', &zero);
-            wputs(" = ");
             t = B;
             t.n = -t.n;
-            wlin(&D, x, &t);
-            end();
+            say(L_STEP, "%L = %L", &A, 'y', &zero, &D, x, &t);
         }
         e[v] = 1;
         f.n = pnew();
