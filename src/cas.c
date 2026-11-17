@@ -1897,25 +1897,33 @@ static void wmult(int mult)
     say(MORE | OPEN, " (multiplicity %d)", mult);
 }
 
+/* digit i of t's mantissa as a char, '0' past either end */
+static char rdig(const R *t, int i)
+{
+    uint8_t b;
+    if (i < 0 || i >= 14) return '0';
+    b = t->mant[i / 2];
+    if (!(i & 1)) b >>= 4;
+    return '0' + (b & 15);
+}
+
 /* x rounded to 6 decimals, trailing zeros dropped */
 static void wreal(const R *x)
 {
     R t = os_RealRound(x, 6);
-    int e = (uint8_t)t.exp - 0x80, p, last = 0, k;
-    uint8_t dig[16];
-    for (k = 0; k < 14; k++) dig[k] = (t.mant[k / 2] >> (k & 1 ? 0 : 4)) & 15;
+    int e = (uint8_t)t.exp - 0x80, p, last = 0;
     if (rzero(&t)) {
         wputc('0');
         return;
     }
     if (e > 12) fail("root too big to print");
     if (t.sign & 0x80) wputc('-');
-    for (p = e < 0 ? 0 : e; p >= 0; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
     for (p = -1; p >= -6; p--)
-        if (e - p >= 0 && e - p < 14 && dig[e - p]) last = p;
-    if (!last) return;
-    wputc('.');
-    for (p = -1; p >= last; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
+        if (rdig(&t, e - p) != '0') last = p;
+    for (p = e < 0 ? 0 : e; p >= last; p--) {
+        if (p == -1) wputc('.');
+        wputc(rdig(&t, e - p));
+    }
 }
 
 /* (num ± k·√r·i^neg)/den, or with sgn != 0 just the + or - root */
@@ -2019,6 +2027,12 @@ static void quad_result(int32_t a, int32_t b, int32_t c, int v, int mult)
     end();
 }
 
+/* rset for an int: one argument slot less per call */
+static void rseti(R *r, int v)
+{
+    rset(r, v);
+}
+
 __attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
 {
     R t1, t2, t3, t4;
@@ -2063,43 +2077,28 @@ __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
     xsub(&a->r, &a->r, &b->r);
     xsub(&a->i, &a->i, &b->i);
     cnorm(&t, a);
-    rset(&one, 1);
+    rseti(&one, 1);
     xadd(&t, &t, &one);
     cnorm(r, b);
     xdiv(r, r, &t);
 }
 
-/* value of the d-th derivative of monic c (degree n) at z */
-__attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v)
+/* value of the d-th derivative of monic c (degree n) at z. with abs, at a real z >= 0 and with every coefficient
+   made positive: the scale rounding errors in the d-th derivative work against */
+__attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v, int abs)
 {
     R f;
     int32_t k;
     int j, t;
-    rset(&v->r, 0);
-    rset(&v->i, 0);
+    rseti(&v->r, 0);
+    rseti(&v->i, 0);
     for (j = n; j >= d; j--) {
         for (k = 1, t = 0; t < d; t++) k *= j - t;
         rset(&f, k);
         xmul(&f, &f, &c[j]);
+        if (abs) rabs(&f);
         cmul(v, zz);
         xadd(&v->r, &v->r, &f);
-    }
-}
-
-/* sum of |d-th derivative coefficient| |x|^k: the scale rounding errors in the d-th derivative work against */
-__attribute__((noinline)) static void hornabs(const R *c, int n, int d, const R *x, R *v)
-{
-    R f;
-    int32_t k;
-    int j, t;
-    rset(v, 0);
-    for (j = n; j >= d; j--) {
-        for (k = 1, t = 0; t < d; t++) k *= j - t;
-        rset(&f, k);
-        xmul(&f, &f, &c[j]);
-        rabs(&f);
-        xmul(v, v, x);
-        xadd(v, v, &f);
     }
 }
 
@@ -2107,33 +2106,34 @@ static void numeric(int fmult)
 {
     static R c[MAXD + 1];
     static Cx w2, u, p, d, t, sum;
-    static R m, maxd, rad, r, tk, stp, two, eps, tol;
-    int k, j, it, mult, n = ideg, base = nz;
+    static R m, maxd, rad, r, tk, stp, eps, tol;
+    int k, j, it, mult, cx, n = ideg, base = nz;
+    Cx *zb = z + base, *ze = zb + n, *zk, *zj;
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
-    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 */
-    rset(&rad, 1);
-    rset(&two, 2);
+    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2. stp = 2^k: doubling is exact */
+    rseti(&rad, 1);
+    rseti(&stp, 1);
     for (k = 1; k <= n; k++) {
         R a = c[n - k];
         rabs(&a);
-        for (rset(&r, 1), rset(&tk, 1), rset(&stp, 1), j = 0; j < k; j++) xmul(&stp, &stp, &two);
-        for (; rlt(&tk, &a); xmul(&tk, &tk, &stp)) xmul(&r, &r, &two);
+        xadd(&stp, &stp, &stp);
+        for (rseti(&r, 1), rseti(&tk, 1); rlt(&tk, &a); xmul(&tk, &tk, &stp)) xadd(&r, &r, &r);
         if (rlt(&rad, &r)) rad = r;
     }
     /* work in y = x/rad so every root sits near the unit circle and nothing overflows the os reals */
-    for (rset(&r, 1), k = n - 1; k >= 0; k--) {
+    for (rseti(&r, 1), k = n - 1; k >= 0; k--) {
         xmul(&r, &r, &rad);
         xdiv(&c[k], &c[k], &r);
     }
-    rset(&w2.r, 2);
-    rset(&w2.i, 0);
-    rset(&u.r, 97);
+    rseti(&w2.r, 2);
+    rseti(&w2.i, 0);
+    rseti(&u.r, 97);
     xsqrt(&u.r, &u.r);
-    rset(&u.i, 9);
+    rseti(&u.i, 9);
     xdiv(&u.i, &u.i, &u.r);
-    rset(&m, 4);
+    rseti(&m, 4);
     xdiv(&u.r, &m, &u.r);
-    rset(&m, n);
+    rseti(&m, n);
     xdiv(&m, &c[n - 1], &m);
     for (k = base; k < base + n; k++) {
         z[k] = w2;
@@ -2144,19 +2144,19 @@ static void numeric(int fmult)
     rten(&eps, -12);
     for (it = 0; it < 1000; it++) {
         poll();
-        rset(&maxd, 0);
-        for (k = base; k < base + n; k++) {
-            horner(c, n, 0, &z[k], &p);
-            rset(&d.r, 1);
-            rset(&d.i, 0);
-            for (j = base; j < base + n; j++) {
-                if (j == k) continue;
-                t = z[k];
-                csubrel(&m, &t, &z[j]);
+        rseti(&maxd, 0);
+        for (zk = zb; zk < ze; zk++) {
+            horner(c, n, 0, zk, &p, 0);
+            rseti(&d.r, 1);
+            rseti(&d.i, 0);
+            for (zj = zb; zj < ze; zj++) {
+                if (zj == zk) continue;
+                t = *zk;
+                csubrel(&m, &t, zj);
                 cmul(&d, &t);
             }
             cdiv(&p, &d);
-            csubrel(&m, &z[k], &p);
+            csubrel(&m, zk, &p);
             if (rlt(&maxd, &m)) maxd = m;
         }
         if (rlt(&maxd, &eps)) break;
@@ -2185,12 +2185,12 @@ static void numeric(int fmult)
             mult++;
             zm[j] = 0;
         }
-        rset(&m, mult);
+        rseti(&m, mult);
         xdiv(&sum.r, &sum.r, &m);
         xdiv(&sum.i, &sum.i, &m);
-        for (rset(&m, 0), it = 0; it < 8; it++) {
-            horner(c, n, mult - 1, &sum, &p);
-            horner(c, n, mult, &sum, &d);
+        for (rseti(&m, 0), it = 0; it < 8; it++) {
+            horner(c, n, mult - 1, &sum, &p, 0);
+            horner(c, n, mult, &sum, &d, 0);
             if (rzero(&d.r) && rzero(&d.i)) break;
             cdiv(&p, &d);
             csubrel(&m, &sum, &p);
@@ -2198,19 +2198,20 @@ static void numeric(int fmult)
         /* forward error ~ the last newton step plus the condition number times the reals' 1e-14 rounding:
            an ill-conditioned expansion like (x+2)^40-1 converges nicely to roots of the rounded polynomial */
         {
-            R ay, num;
-            cnorm(&ay, &sum);
-            hornabs(c, n, mult - 1, &ay, &num);
-            horner(c, n, mult, &sum, &d);
+            Cx ay, num;
+            cnorm(&ay.r, &sum);
+            rseti(&ay.i, 0);
+            horner(c, n, mult - 1, &ay, &num, 1);
+            horner(c, n, mult, &sum, &d, 0);
             cnorm(&tol, &d);
-            rset(&eps, 1);
-            xadd(&ay, &ay, &eps);
-            xmul(&tol, &tol, &ay);
+            rseti(&eps, 1);
+            xadd(&ay.r, &ay.r, &eps);
+            xmul(&tol, &tol, &ay.r);
             rten(&eps, -14);
-            xmul(&num, &num, &eps);
+            xmul(&num.r, &num.r, &eps);
             if (rzero(&tol)) rten(&tol, -99);
-            xdiv(&num, &num, &tol);
-            xadd(&m, &m, &num);
+            xdiv(&num.r, &num.r, &tol);
+            xadd(&m, &m, &num.r);
         }
         if (rlt(&dkerr, &m)) dkerr = m;
         xmul(&sum.r, &sum.r, &rad);
@@ -2219,7 +2220,7 @@ static void numeric(int fmult)
         rtol(&tol, &sum.r, mult > 1 ? -4 : -7);
         t.r = sum.i;
         rabs(&t.r);
-        if (rlt(&t.r, &tol)) rset(&sum.i, 0);
+        if (rlt(&t.r, &tol)) rseti(&sum.i, 0);
         z[nz] = sum;
         zm[nz++] = mult * fmult;
     }
@@ -2237,7 +2238,7 @@ static void numeric(int fmult)
             if (rlt(&m, &tol)) break;
         }
         if (j == nz) {
-            rset(&z[k].i, 0);
+            rseti(&z[k].i, 0);
             zm[k] = -zm[k]; /* marks a loner for the next pass */
         }
     }
@@ -2260,7 +2261,8 @@ static void numeric(int fmult)
     for (k = 1; k < nz; k++) {
         t = z[k];
         mult = zm[k];
-        for (j = k; j > 0 && (!rzero(&z[j - 1].i) > !rzero(&t.i) || (!rzero(&z[j - 1].i) == !rzero(&t.i) && rlt(&t.r, &z[j - 1].r))); j--) {
+        /* real roots first, then by real part */
+        for (j = k; j > 0 && ((cx = rzero(&z[j - 1].i) - rzero(&t.i)) ? cx < 0 : rlt(&t.r, &z[j - 1].r)); j--) {
             z[j] = z[j - 1];
             zm[j] = zm[j - 1];
         }
@@ -2542,7 +2544,7 @@ static void analyze(const Poly *p, int v)
     uint8_t m[NV];
     nroots = nbq = nz = nquads = 0;
     nest4[4] = 0;
-    rset(&dkerr, 0);
+    rseti(&dkerr, 0);
     r = gcf(p, &k, m);
     if (m[v]) {
         add_root(0, 1, m[v]);
