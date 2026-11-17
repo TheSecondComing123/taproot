@@ -1631,11 +1631,11 @@ static void wlinfactor(int32_t p, int32_t q, int v)
 
 static void sortll(int32_t *a, int n)
 {
-    int i, j;
-    for (i = 1; i < n; i++) {
-        int32_t t = a[i];
-        for (j = i; j > 0 && a[j - 1] > t; j--) a[j] = a[j - 1];
-        a[j] = t;
+    int32_t *p, *q;
+    for (p = a + 1; p < a + n; p++) {
+        int32_t t = *p;
+        for (q = p; q > a && q[-1] > t; q--) *q = q[-1];
+        *q = t;
     }
 }
 
@@ -1663,16 +1663,16 @@ static int divisors(int32_t n, int32_t *out)
 
 static void add_root(int32_t p, int32_t q, int mult)
 {
-    int i;
-    for (i = 0; i < nroots; i++) {
-        if (roots[i].p == p && roots[i].q == q) {
-            roots[i].mult += mult;
+    Root *r;
+    for (r = roots; r < roots + nroots; r++) {
+        if (r->p == p && r->q == q) {
+            r->mult += mult;
             return;
         }
     }
-    roots[nroots].p = p;
-    roots[nroots].q = q;
-    roots[nroots].mult = mult;
+    r->p = p;
+    r->q = q;
+    r->mult = mult;
     nroots++;
 }
 
@@ -1797,22 +1797,22 @@ static int32_t sqpart(int32_t n, int32_t *rest)
 {
     static int32_t last_n = -1, last_s, last_r;
     int32_t s_ = 1, j, n0 = n;
-    if (n == last_n) {
-        *rest = last_r;
-        return last_s;
-    }
-    for (j = 2; j <= n / j; j++) {
-        if (!(j & 4095)) poll();
-        while (n % (j * j) == 0) {
-            n /= j * j;
-            s_ *= j;
+    if (n != last_n) {
+        for (j = 2; j <= n / j; j++) {
+            int32_t jj = j * j;
+            if (!(j & 4095)) poll();
+            while (n % jj == 0) {
+                n /= jj;
+                s_ *= j;
+            }
         }
+        /* cached only once done, since clear can stop poll() midway */
+        last_n = n0;
+        last_s = s_;
+        last_r = n;
     }
-    *rest = n;
-    last_n = n0;
-    last_s = s_;
-    last_r = n;
-    return s_;
+    *rest = last_r;
+    return last_s;
 }
 
 static void wbq(int i, int v)
