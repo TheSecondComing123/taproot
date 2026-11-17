@@ -2369,9 +2369,9 @@ static void toip(const Q *c, int deg)
     int32_t l = 1, g = 0;
     int i;
     for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
-    for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
+    for (i = 0; i <= deg; i++) g = gcd(g, ip[i] = ckmul(c[i].n, l / c[i].d));
     if (c[deg].n < 0) g = -g;
-    for (i = 0; i <= deg; i++) ip[i] = ckmul(c[i].n, l / c[i].d) / g;
+    for (i = 0; i <= deg; i++) ip[i] /= g;
     ideg = deg;
 }
 
@@ -2379,10 +2379,10 @@ static void dderiv(const Q *c, int deg, Q *out)
 {
     int i;
     Q k;
-    for (i = 0; i <= MAXD; i++) qset(&out[i], 0);
-    for (i = 1; i <= deg; i++) {
-        qset(&k, i);
-        qmul(&out[i - 1], &c[i], &k);
+    for (i = 0; i <= MAXD; i++) {
+        qset(&k, i + 1);
+        qset(&out[i], 0);
+        if (i < deg) qmul(&out[i], &c[i + 1], &k);
     }
 }
 
@@ -2504,14 +2504,15 @@ static int sqfree(void)
 static int rational_quadratic(int mult)
 {
     int32_t d, sq;
-    Q a, b;
+    int sg;
+    Q a;
     if (ideg != 2 || (d = disc(ip[2], ip[1], ip[0])) < 0) return 0;
     sq = isqrt(d);
     if (sq * sq != d) return 0;
-    qnorm(&a, ckadd(-ip[1], sq), ckmul(2, ip[2]));
-    qnorm(&b, ckadd(-ip[1], -sq), ckmul(2, ip[2]));
-    add_root(a.n, a.d, mult);
-    add_root(b.n, b.d, mult);
+    for (sg = 1; sg >= -1; sg -= 2) {
+        qnorm(&a, ckadd(-ip[1], sg * sq), ckmul(2, ip[2]));
+        add_root(a.n, a.d, mult);
+    }
     step("the discriminant is a perfect square, so the roots are rational");
     ideg = 0;
     ip[0] = 1;
