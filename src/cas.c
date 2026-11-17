@@ -539,13 +539,6 @@ static void pfree(Poly *p)
     if (p) p->used = 0;
 }
 
-static void addtermi(Poly *p, int32_t n, const uint8_t *e)
-{
-    Q c;
-    qset(&c, n);
-    addterm(p, &c, e);
-}
-
 static Poly *pconst(const Q *c)
 {
     Poly *p = pnew();
@@ -554,20 +547,15 @@ static Poly *pconst(const Q *c)
     return p;
 }
 
-static Poly *pconsti(int32_t n)
-{
-    Poly *p = pnew();
-    uint8_t e[NV] = { 0 };
-    addtermi(p, n, e);
-    return p;
-}
-
+/* the variable v, or 1 for v < 0 */
 static Poly *pvar(int v)
 {
     Poly *p = pnew();
     uint8_t e[NV] = { 0 };
-    e[v] = 1;
-    addtermi(p, 1, e);
+    Q one;
+    if (v >= 0) e[v] = 1;
+    qset(&one, 1);
+    addterm(p, &one, e);
     return p;
 }
 
@@ -1234,7 +1222,7 @@ static Poly *ppow(const Poly *a, int n)
     Poly *r, *t;
     int k;
     if (a->n == 2 && n >= 2) return binom(a, n);
-    r = pconsti(1);
+    r = pvar(-1);
     for (k = 1; k <= n; k++) {
         t = pmul(r, a);
         if (a->n > 2 && k > 1) say(L_STEP, "(%p)^%d = %p", a, k, t);
@@ -1255,7 +1243,7 @@ static Rat rpow(Rat a, int k)
         a.d = t;
         k = -k;
     }
-    r.n = a.n ? ppow(a.n, k) : pconsti(1);
+    r.n = a.n ? ppow(a.n, k) : pvar(-1);
     r.d = a.d ? ppow(a.d, k) : 0;
     rsimp(&r);
     return r;
