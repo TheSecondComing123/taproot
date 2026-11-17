@@ -1387,20 +1387,25 @@ static Rat punary(void)
     return r;
 }
 
-/* a product of two polynomials, one with several terms, gets its own step */
-static Rat rmul_shown(const Rat *a, const Rat *b)
+/* *a times or over *b, freeing both; a product of two polynomials, one with several terms, gets its own step */
+static void rmulby(Rat *a, Rat *b, int div)
 {
-    Rat r = rmul(*a, *b);
+    Rat r;
     Q c;
-    if (!a->d && !b->d && !isconst(a->n, &c) && !isconst(b->n, &c) && (a->n->n > 1 || b->n->n > 1)) {
-        say(L_STEP, a->n->n > 1 ? "(%p)(%p) = %p" : "%p(%p) = %p", a->n, b->n, r.n);
+    if (div) {
+        r = rdiv(*a, *b);
+    } else {
+        r = rmul(*a, *b);
+        if (!a->d && !b->d && !isconst(a->n, &c) && !isconst(b->n, &c) && (a->n->n > 1 || b->n->n > 1)) {
+            say(L_STEP, a->n->n > 1 ? "(%p)(%p) = %p" : "%p(%p) = %p", a->n, b->n, r.n);
+        }
     }
-    return r;
+    rnext(a, b, &r);
 }
 
 static Rat pterm(void)
 {
-    Rat a = punary(), b, r;
+    Rat a = punary(), b;
     for (;;) {
         int ch = peek();
         if (ch == '*' || ch == '/') {
@@ -1411,8 +1416,7 @@ static Rat pterm(void)
         } else {
             return a;
         }
-        r = ch == '/' ? rdiv(a, b) : rmul_shown(&a, &b);
-        rnext(&a, &b, &r);
+        rmulby(&a, &b, ch == '/');
     }
 }
 
@@ -1424,18 +1428,22 @@ static int proper(const Rat *t)
 
 static Rat pexpr(void)
 {
-    Rat a = pterm(), b, r;
-    int top = !nest, terms = 1, fracs = !!a.d, mixed_ok = proper(&a);
+    Rat a, b, r;
+    int top = !nest, terms = 0, fracs = 0, mixed_ok = 1, ch = 0;
     for (;;) {
-        int ch = peek();
-        if (ch != '+' && ch != '-') break;
-        s++;
         b = pterm();
         terms++;
         fracs += !!b.d;
         mixed_ok &= proper(&b);
-        r = radd(a, b, ch == '-', 1);
-        rnext(&a, &b, &r);
+        if (!ch) {
+            a = b;
+        } else {
+            r = radd(a, b, ch == '-', 1);
+            rnext(&a, &b, &r);
+        }
+        ch = peek();
+        if (ch != '+' && ch != '-') break;
+        s++;
     }
     /* x+1/x is already quotient plus remainder; dividing it back out would just repeat it */
     if (top) typed_mixed = terms > 1 && fracs == 1 && mixed_ok;
