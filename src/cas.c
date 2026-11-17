@@ -3814,7 +3814,6 @@ static void do_system(const char **part, int n)
     for (i = 0; i < n; i++) {
         const char *p, *rel = 0;
         Rat d;
-        int deg = 0;
         for (p = part[i]; p < part[i + 1] - 1; p++)
             if (*p == '=') rel = p;
         sides(&d, part[i], rel, 1, p, 0);
@@ -3827,10 +3826,9 @@ static void do_system(const char **part, int n)
                 used[v] |= t->e[v];
                 td += t->e[v];
             }
-            if (td > deg) deg = td;
+            if (td > 1) nonlin = i;
         }
-        if (deg > 1) nonlin = i;
-        else lin = i;
+        if (nonlin != i) lin = i;
     }
     for (mcols = 0, v = 0; v < NV; v++)
         if (used[v]) mvar[mcols++] = v;
