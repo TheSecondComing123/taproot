@@ -3730,6 +3730,24 @@ static void linear_system(Poly **eq, int n)
     if (row < mcols) step("infinitely many solutions");
 }
 
+/* [a, b) as left minus right when a relation sits at [at, at + len); show says the move */
+static void sides(Rat *d, const char *a, const char *at, int len, const char *b, int show)
+{
+    Rat l, r;
+    if (!at) {
+        *d = parse(a, b);
+        return;
+    }
+    l = parse(a, at);
+    r = parse(at + len, b);
+    *d = radd(l, r, 1, 0);
+    if (show && (r.n->n || r.d)) {
+        say(L_STEP, "move everything to one side: %r=0", *d);
+    }
+    rfree(l);
+    rfree(r);
+}
+
 /* one linear and one polynomial equation in two variables: substitute */
 static void substitution(Poly *lin, Poly *other, int u, int v)
 {
@@ -3787,19 +3805,11 @@ static void do_system(const char **part, const char **pend, int n)
     if (n < 2) fail("a system needs at least two equations, split by commas");
     for (i = 0; i < n; i++) {
         const char *p, *rel = 0;
-        Rat l, r, d;
+        Rat d;
         int deg = 0;
         for (p = part[i]; p < pend[i]; p++)
             if (*p == '=') rel = p;
-        l = parse(part[i], rel ? rel : pend[i]);
-        if (rel) {
-            r = parse(rel + 1, pend[i]);
-            d = radd(l, r, 1, 0);
-            rfree(l);
-            rfree(r);
-        } else {
-            d = l;
-        }
+        sides(&d, part[i], rel, 1, pend[i], 0);
         if (d.d) fail("systems need polynomial equations, no fractions with variables");
         eq[i] = d.n;
         if (hasi(d.n)) fail("systems need real coefficients");
@@ -3912,17 +3922,7 @@ void cas_run(int cmd, const char *input)
         if (!i || a != at) fail("write it as y=... or just the expression");
         a++;
     }
-    if (rel && cmd == CMD_SOLVE) {
-        Rat lhs = parse(a, at), rhs = parse(at + rlen, b);
-        r = radd(lhs, rhs, 1, 0);
-        if (rel == '=' && (rhs.n->n || rhs.d)) {
-            say(L_STEP, "move everything to one side: %r=0", r);
-        }
-        rfree(lhs);
-        rfree(rhs);
-    } else {
-        r = parse(a, b);
-    }
+    sides(&r, a, cmd == CMD_SOLVE ? at : 0, rlen, b, rel == '=');
     if (cmd == CMD_SOLVE) do_solve(r, rel ? rel : '=');
     else run[cmd](r);
     os_PopErrorHandler();
