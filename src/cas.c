@@ -1058,21 +1058,20 @@ static void normalize(Rat *r)
 static void mindiv(Rat *r)
 {
     uint8_t m[NV], *e;
-    int i, k, v, any = 0;
+    int i, k, v;
     Poly *p;
-    for (v = 0; v < NV; v++) m[v] = MAXE;
-    for (k = 0; k < 2; k++) {
-        p = k ? r->d : r->n;
-        for (i = 0; i < p->n; i++)
-            for (e = p->t[i].e, v = 0; v < NV; v++)
-                if (e[v] < m[v]) m[v] = e[v];
-    }
-    for (v = 0; v < NV; v++) any |= m[v];
-    if (!any) return;
-    for (k = 0; k < 2; k++) {
-        p = k ? r->d : r->n;
-        for (i = 0; i < p->n; i++)
-            for (e = p->t[i].e, v = 0; v < NV; v++) e[v] -= m[v];
+    memset(m, MAXE, NV);
+    /* passes 0 and 1 find the lowest powers, 2 and 3 take them off */
+    for (k = 0; k < 4; k++) {
+        p = k & 1 ? r->d : r->n;
+        for (i = 0; i < p->n; i++) {
+            for (e = p->t[i].e, v = 0; v < NV; v++) {
+                if (k > 1)
+                    e[v] -= m[v];
+                else if (e[v] < m[v])
+                    m[v] = e[v];
+            }
+        }
     }
 }
 
