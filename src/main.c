@@ -114,7 +114,7 @@ static void text(const char *s, int n, int x, int y, uint8_t color, int style)
         up = 0;
         bar = style & PRETTY && (c == G_SQRT[0] || (bar && (digit(c) || (c == '-' && s[-1] == G_SQRT[0]))));
         if (bar && c != G_SQRT[0]) memset(&gfx_vbuffer[y][x], color, CW);
-        glyph(font[style & BOLD][c], 14, x, y, color);
+        if (c != ' ') glyph(font[style & BOLD][c > ' ' ? c - 0x12 : c > 8 ? c - 9 : c - 1], 14, x, y, color);
         x += CW;
     }
 }
