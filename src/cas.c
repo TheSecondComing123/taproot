@@ -2406,8 +2406,11 @@ static int nested(int v, int mult)
     return 1;
 }
 
+static int rational_quadratic(int mult);
+
 static void exact_or_numeric(int v, int mult)
 {
+    if (rational_quadratic(mult)) return;
     if (ideg == 1) {
         add_root(-ip[0], ip[1], mult);
     } else if (ideg == 2) {
@@ -2420,9 +2423,8 @@ static void exact_or_numeric(int v, int mult)
             quad_steps(quads[i].a, quads[i].b, quads[i].c, v, 1);
         }
     } else if (ideg >= 1 && !nested(v, mult)) {
-        int n = ideg;
         numeric(mult);
-        say(L_STEP, "no exact formula used for degree %d, solving numerically", n);
+        say(L_STEP, "no exact formula used for degree %d, solving numerically", ideg);
     }
 }
 
@@ -2525,7 +2527,7 @@ static void leftover(int v)
 {
     int nf = sqfree(), i, at;
     if (nf < 1 || (nf == 1 && fmul[0] == 1)) {
-        if (!rational_quadratic(1)) exact_or_numeric(v, 1);
+        exact_or_numeric(v, 1);
         return;
     }
     step("some factors repeat, so solve each once");
@@ -2534,7 +2536,7 @@ static void leftover(int v)
         say(L_STEP | OPEN, "(");
         wip(v);
         say(MORE, ")^%d", fmul[i]);
-        if (!rational_quadratic(fmul[i])) exact_or_numeric(v, fmul[i]);
+        exact_or_numeric(v, fmul[i]);
     }
 }
 
@@ -2551,10 +2553,7 @@ static void analyze(const Poly *p, int v)
     r = gcf(p, &k, m);
     if (m[v]) {
         add_root(0, 1, m[v]);
-        say(L_STEP | OPEN, "%c", vars[v]);
-        if (m[v] > 1) {
-            say(MORE | OPEN, "^%d", m[v]);
-        }
+        say(L_STEP | OPEN, m[v] > 1 ? "%c^%d" : "%c", vars[v], m[v]);
         say(MORE, " factor gives %c=0", vars[v]);
     }
     ideg = intdense(r, v);
