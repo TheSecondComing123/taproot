@@ -74,8 +74,8 @@ static const char alpha[] = {
 };
 
 static char in[MAXIN + 1], ans[MAXIN + 1], hist[4][MAXIN + 1];
-static int cur, mode, last, shown = -1, scroll, nhist, hpos, ans_long;
-static uint8_t pending;
+static int cur, last, shown = -1, scroll, nhist, hpos, ans_long;
+static uint8_t pending, mode;
 static const char **lines;
 static const uint8_t *kinds;
 static int nout, vis;
