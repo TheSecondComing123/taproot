@@ -3717,10 +3717,10 @@ static void linear_system(Poly **eq, int n)
             wq(&m[mcols]);
             first = 0;
         }
-        for (j = piv[i] + 1; j < mcols; j++) {
-            if (!m[j].n) continue;
-            m[j].n = -m[j].n;
-            say(MORE | OPEN, first ? "%M%c" : "%T%c", &m[j], vars[mvar[j]]);
+        for (j = piv[i] + 1, q = m + j; j < mcols; j++, q++) {
+            if (!q->n) continue;
+            q->n = -q->n;
+            say(MORE | OPEN, first ? "%M%c" : "%T%c", q, vars[mvar[j]]);
             first = 0;
         }
         if (first) wputc('0');
