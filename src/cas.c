@@ -3658,16 +3658,16 @@ static void linear_system(Poly **eq, int n)
     Q *rows[NV + 1], *m, *pr, *q, *r, f, t;
     int i, j, row = 0, piv[NV + 1], col;
     step("as rows:");
-    for (i = 0; i < n; i++) {
+    for (i = 0, m = *mx; i < n; i++, m += NV + 1) {
         const Term *tm = eq[i]->t;
-        m = rows[i] = mx[i];
+        rows[i] = m;
         for (q = m; q <= m + mcols; q++) qset(q, 0);
         for (j = 0; j < eq[i]->n; j++, tm++) {
-            int k, c = mcols;
-            for (k = 0; k < mcols; k++)
-                if (tm->e[mvar[k]]) c = k;
-            m[c] = tm->c;
-            if (c == mcols) m[c].n = -m[c].n;
+            int k;
+            for (k = 0, q = m, r = m + mcols; k < mcols; k++, q++)
+                if (tm->e[mvar[k]]) r = q;
+            *r = tm->c;
+            if (r == m + mcols) r->n = -r->n;
         }
         say(L_STEP | OPEN, "R%d: ", i + 1);
         wrow(m);
