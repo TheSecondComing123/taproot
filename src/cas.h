@@ -12,11 +12,14 @@ enum { L_STEP, L_RESULT, L_APPROX, L_ERROR };
 #define G_APPROX "\x03"
 #define G_DOT "\x04"
 
-#define CAS_MAXLINES 80
+#define CAS_MAXLINES 120
 
 extern const char *cas_line[CAS_MAXLINES];
 extern uint8_t cas_kind[CAS_MAXLINES];
 extern int cas_nlines;
+
+/* polled during long loops; returning nonzero stops the run with an error */
+extern int (*cas_stop)(void);
 
 void cas_run(int cmd, const char *input);
 

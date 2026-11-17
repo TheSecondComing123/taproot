@@ -3,7 +3,7 @@ import re
 import subprocess
 import sys
 
-from sympy import Mul, Pow, Rational, diff, div, expand, factor_list, roots, symbols
+from sympy import Mul, Poly, Pow, Rational, diff, div, expand, factor_list, sqf_list, symbols
 from sympy.parsing.sympy_parser import implicit_multiplication_application, parse_expr, standard_transformations
 
 x, y = symbols("x y")
@@ -79,12 +79,39 @@ def solutions(lines):
             mult = int(m.group(1)) if m else 1
             body = re.sub(r" \(multiplicity \d+\)", "", body)
             found += numbers(body) * mult
-        if k == 2 and not (prev and prev[0] == 1 and "√" in prev[1]):
-            for part in t.split(" ≈ ", 1)[1].split(", "):
-                found += numbers(part)
+        if k == 2 and " ≈ " in t and not (prev and prev[0] == 1 and "√" in prev[1]):
+            body = t.split(" ≈ ", 1)[1]
+            m = re.search(r" \(multiplicity (\d+)\)", body)
+            mult = int(m.group(1)) if m else 1
+            body = re.sub(r" \(multiplicity \d+\)", "", body)
+            for part in body.split(", "):
+                found += numbers(part) * mult
         if k != 0:
             prev = (k, t)
     return [complex(v.evalf()) for v in found], None
+
+
+def reference_roots(p):
+    out = []
+    for f, m in sqf_list(Poly(p, x))[1]:
+        out += [complex(r) for r in f.nroots(n=30, maxsteps=500)] * m
+    return out
+
+
+def gen_numeric():
+    """repeated irrational and complex factors, the cases the exact path can't take"""
+    p = random.choice([1, 2, -1])
+    deg = 0
+    while deg < random.randint(3, 9):
+        b, c = random.randint(-4, 4), random.randint(-6, 6)
+        if b * b - 4 * c >= 0 and int((b * b - 4 * c) ** 0.5) ** 2 == b * b - 4 * c:
+            continue
+        m = random.choice([1, 1, 2, 3])
+        p *= (x**2 + b * x + c) ** m
+        deg += 2 * m
+    if random.random() < 0.5:
+        p *= x**3 + random.randint(-3, 3) * x + random.choice([-5, -3, 3, 5])
+    return p
 
 
 def same_roots(a, b):
@@ -105,6 +132,8 @@ def main():
         p = gen_factor()
         cases.append(("f", to_input(p), p))
         cases.append(("s", to_input(p) + "=0", p))
+        q = gen_numeric()
+        cases.append(("s", to_input(q) + "=0", q))
         a = expand((x + random.randint(-4, 4)) ** random.randint(2, 6) * (random.randint(1, 3) * x - random.randint(-5, 5)))
         cases.append(("e", f"(x+{random.randint(0, 4)})^{random.randint(2, 7)}({random.randint(1, 3)}x-{random.randint(0, 5)})", None))
         cases.append(("d", to_input(a), a))
@@ -113,11 +142,14 @@ def main():
         if num.as_poly(x).degree() >= den.as_poly(x).degree():
             cases.append(("e", f"({to_input(num)})/({to_input(den)})", (num, den)))
 
-    bad = 0
+    bad = sensitive = 0
     for (cmd, inp, ref), lines in zip(cases, run(cases)):
         res = [t for k, t in lines if k == 1]
         errs = [t for k, t in lines if k == 3]
         ok, why = True, ""
+        if errs and errs[0] == "too sensitive to solve numerically":
+            sensitive += 1
+            continue
         if errs:
             ok, why = False, errs[0]
         elif cmd == "f":
@@ -131,7 +163,7 @@ def main():
                         ok, why = False, f"reducible factor {base}"
         elif cmd == "s":
             got, _ = solutions(lines)
-            want = [complex(r.evalf()) for r, m in roots(ref, x).items() for _ in range(m)]
+            want = reference_roots(ref)
             ok = same_roots(got, want)
             why = f"got {got} want {want}"
         elif cmd == "e" and ref is None:
@@ -149,7 +181,7 @@ def main():
         if not ok:
             bad += 1
             print(f"FAIL {cmd} {inp}\n  {why}\n  " + "\n  ".join(t for _, t in lines))
-    print(f"{len(cases) - bad}/{len(cases)} random cases passed")
+    print(f"{len(cases) - bad - sensitive}/{len(cases)} random cases passed, {sensitive} refused as too sensitive")
     sys.exit(1 if bad else 0)
 
 

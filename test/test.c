@@ -163,6 +163,21 @@ int main(int argc, char **argv)
     check(S, "y^2-2=0", "y = " G_PM G_SQRT "2 | y " G_APPROX " " G_PM "1.414214");
     check(S, "(x^3+1)/(x-2)=0", "fractions of polynomials aren't supported");
 
+    check(F, "x^31+10000000000", "= x^31+10000000000");
+    check(F, "x^2-1441440", "= x^2-1441440");
+    check(F, "x^4-4x^2+4", "= (x^2-2)^2");
+    check(S, "x^4-4x^2+4=0", "x = " G_PM G_SQRT "2 (multiplicity 2) | x " G_APPROX " " G_PM "1.414214 (multiplicity 2)");
+    check(S, "(x^2+x-1)^2=0", "x " G_APPROX " -1.618034 (multiplicity 2) | x " G_APPROX " 0.618034 (multiplicity 2)");
+    check(S, "(x^3-2x-5)^3=0", "x " G_APPROX " 2.094551 (multiplicity 3) | x " G_APPROX " -1.047276" G_PM "1.13594i (multiplicity 3)");
+    check(S, "(x+2)^40=1", "too sensitive to solve numerically");
+    check(S, "(x-3)^6=2", "x " G_APPROX " 1.877538 | x " G_APPROX " 4.122462 | x " G_APPROX " 2.438769" G_PM "0.972081i | x " G_APPROX " 3.561231" G_PM "0.972081i");
+    check(E, "x^50, x=1", "= 1");
+    check(E, "1.5.3", "a number has two decimal points");
+    check(E, "x^2, y=(x+1)/x", "y= needs a number");
+    check(E, "((((((((((((((((((((((((((x))))))))))))))))))))))))))", "too many nested ( or signs");
+    check(E, "-------------------------x", "too many nested ( or signs");
+    check(E, "((((((((((x))))))))))", "= x");
+
     check(E, "x^-1", "exponent must be a whole number (got -1)");
     check(E, "x^y", "exponent must be a whole number (got y)");
     check(E, "x^1.5", "exponent must be a whole number (got 3/2)");
@@ -179,6 +194,10 @@ int main(int argc, char **argv)
     check(E, "a+b+c+d+e", "too many letters (max 4)");
     check(E, "(99x+99)^30", "numbers too big");
     check(E, "99999999999999999999", "numbers too big");
+    check(E, "3000000000*3000000000", "= 9000000000000000000");
+    check(E, "-3000000000*3000000000", "= -9000000000000000000");
+    check(E, "3037000499*3037000499", "numbers too big");
+    check(E, "4611686018427387904*2", "numbers too big");
     check(E, "x/0", "division by zero");
     check(E, "x^2, x=y", "x= needs a number");
     check(E, "x^2, 3", "after a comma, write a value like x=3");
@@ -216,6 +235,9 @@ int main(int argc, char **argv)
     has_step(S, "2x^2+6x+3=0", "x = (-6" G_PM "2" G_SQRT "3)/4");
     has_step(S, "x^2+2x+5=0", G_SQRT "-16 = 4i");
     has_step(S, "x^2=4", "move everything to one side: x^2-4=0");
+    has_step(S, "y^2+2y-1=0", "y = (-2" G_PM "2" G_SQRT "2)/2");
+    has_step(F, "x^2-1441440", "too many candidates, skipping the rest");
+    has_step(F, "x^4-4x^2+4", "x^4-4x^2+4 = (x^2-2)^2");
 
     printf("%d/%d passed\n", total - fails, total);
     return fails != 0;

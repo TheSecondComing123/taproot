@@ -12,7 +12,7 @@
 #define MAXE 200
 #define MAXPOW 60
 #define TEXT 8192
-#define STEP_LINES (CAS_MAXLINES - 16)
+#define STEP_LINES (CAS_MAXLINES - 48)
 #define STEP_TEXT (TEXT - 2048)
 #define FRAC "fractions of polynomials aren't supported"
 
@@ -36,6 +36,7 @@ static uint8_t assigned[NV];
 static Q val[NV];
 static jmp_buf fail_jmp;
 static const char *s, *send;
+static int nest;
 static Poly *inexact_q, *inexact_r, *inexact_d;
 static Q da[MAXD + 1], db[MAXD + 1], dq[MAXD + 1];
 
@@ -107,12 +108,22 @@ __attribute__((noreturn)) static void fail(const char *msg)
     die();
 }
 
+int (*cas_stop)(void);
+
+static void poll(void)
+{
+    if (cas_stop && cas_stop()) fail("stopped");
+}
+
 static long long ckmul(long long a, long long b)
 {
-    /* __builtin_mul_overflow inlines ~2.9 kb of 64-bit code on the ez80 */
-    long long r = (long long)((unsigned long long)a * (unsigned long long)b);
-    if (r == LLONG_MIN || (a && r / a != b)) fail("numbers too big");
-    return r;
+    /* any exact overflow test (even divide-back) compiles to ~2.9 kb of inline 64-bit code on the ez80.
+       the long double product is within 2^-53 of the real one, so 9.2e18 < 2^63 is a safe cutoff */
+    long double p;
+    if ((unsigned long long)a + 0x7fffffff < 0xffffffffULL && (unsigned long long)b + 0x7fffffff < 0xffffffffULL) return a * b;
+    p = (long double)a * b;
+    if (p >= 9.2e18L || p <= -9.2e18L) fail("numbers too big");
+    return a * b;
 }
 
 static long long ckadd(long long a, long long b)
@@ -373,6 +384,7 @@ static Poly *pmul(Poly *a, Poly *b)
     operand(b);
     r = pnew();
     for (i = 0; i < a->n; i++) {
+        poll();
         for (j = 0; j < b->n; j++) {
             for (v = 0; v < NV; v++) {
                 int x = a->t[i].e[v] + b->t[j].e[v];
@@ -593,7 +605,9 @@ static Poly *binom(const Poly *a, int n)
     wll(n);
     end();
     for (k = 0; k <= n; k++) {
-        Q coef = qmul(qmul(qint(c), qpow(A->c, n - k)), qpow(B->c, k));
+        Q coef;
+        poll();
+        coef = qmul(qmul(qint(c), qpow(A->c, n - k)), qpow(B->c, k));
         for (v = 0; v < NV; v++) {
             int x = A->e[v] * (n - k) + B->e[v] * k;
             if (x > MAXE) fail("exponent too big (max 200)");
@@ -665,6 +679,12 @@ static int varidx(int ch)
 static Poly *pexpr(void);
 static Poly *punary(void);
 
+/* each ( or leading sign recurses ~5 frames; the calc stack is small */
+static void deeper(void)
+{
+    if (++nest > 24) fail("too many nested ( or signs");
+}
+
 static Poly *patom(void)
 {
     int ch = peek();
@@ -685,6 +705,7 @@ static Poly *patom(void)
             }
         }
         if (!digits) fail("a lone . isn't a number");
+        if (s < send && *s == '.') fail("a number has two decimal points");
         return pconst(qmake(n, d));
     }
     if (isalpha(ch)) {
@@ -697,9 +718,11 @@ static Poly *patom(void)
     }
     if (ch == '(') {
         s++;
+        deeper();
         p = pexpr();
         if (peek() != ')') fail("missing )");
         s++;
+        nest--;
         return p;
     }
     if (!ch) fail("the expression ends too early");
@@ -734,11 +757,16 @@ static Poly *punary(void)
     int ch = peek();
     if (ch == '+') {
         s++;
-        return punary();
+        deeper();
+        p = punary();
+        nest--;
+        return p;
     }
     if (ch != '-') return ppower();
     s++;
+    deeper();
     p = punary();
+    nest--;
     r = pscale(p, qint(-1));
     pfree(p);
     return r;
@@ -812,7 +840,7 @@ static void parse_value(const char *start, const char *stop)
     }
     p = pexpr();
     if (peek()) unexpected(*s);
-    if (!isconst(p, &q)) {
+    if (inexact_q || !isconst(p, &q)) {
         begin(L_ERROR);
         wputc(vars[v]);
         wputs("= needs a number");
@@ -902,7 +930,7 @@ static void do_expand(Poly *p)
     wputs("P = ");
     wpoly(p);
     end();
-    if (v >= 0 && assigned[v] && nassigned() == 1 && p->n && hasvars(p->t[0].e)) {
+    if (v >= 0 && assigned[v] && nassigned() == 1 && p->n && hasvars(p->t[0].e) && p->t[0].e[v] <= MAXD) {
         int deg = todense(p, v, da);
         begin(L_STEP);
         wputs("remainder theorem: P(");
@@ -998,9 +1026,12 @@ static long long ip[MAXD + 1];
 static int ideg;
 static long long dv0[256], dvn[256];
 static long long bqa[2], bqb[2];
-static int nbq;
-static long double zr[MAXD], zi[MAXD];
-static int nz;
+static int nbq, bqmult;
+typedef struct { long double r, i; } Cx;
+
+static Cx z[MAXD];
+static int zm[MAXD], nz;
+static long double dkerr;
 
 static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
 {
@@ -1069,17 +1100,25 @@ static void sortll(long long *a, int n)
     }
 }
 
-/* ponytail: trial division up to sqrt(n). constant terms past ~10^12 get slow on the calc */
+/* builds divisors from the prime factorization, -1 if there are more than 256.
+   ponytail: trial division, so a prime factor past ~10^10 still takes minutes on the calc (clear stops it) */
 static int divisors(long long n, long long *out)
 {
-    long long j;
-    int k = 0;
+    long long p, m;
+    int k = 1, i, base, e;
     if (n < 0) n = -n;
-    for (j = 1; j <= n / j; j++) {
-        if (n % j) continue;
-        if (k + 2 > 256) fail("too many divisors to test");
-        out[k++] = j;
-        if (j != n / j) out[k++] = n / j;
+    out[0] = 1;
+    for (p = 2; n > 1; p += 1 + (p > 2)) {
+        if (!(p & 4095)) poll();
+        if (p > n / p) p = n;
+        if (n % p) continue;
+        for (e = 0; n % p == 0; e++) n /= p;
+        if (k * (e + 1) > 256) return -1;
+        base = k;
+        for (m = 1; e--;) {
+            m *= p;
+            for (i = 0; i < base; i++) out[k++] = out[i] * m;
+        }
     }
     sortll(out, k);
     return k;
@@ -1104,11 +1143,13 @@ static void add_root(long long p, long long q, int mult)
 static int try_root(long long p, long long q)
 {
     static long long b[MAXD + 1];
-    long double r = (long double)p / q, sum = 0, scale = 0, pw = 1;
-    int k;
+    long double r = (long double)p / q, sum = 0, scale = 0, pw = 1, t;
+    int k, big = fabsl(r) > 1;
+    if (big) r = 1 / r;
     for (k = 0; k <= ideg; k++) {
-        sum += ip[k] * pw;
-        scale += fabsl(ip[k] * pw);
+        t = ip[big ? ideg - k : k] * pw;
+        sum += t;
+        scale += fabsl(t);
         pw *= r;
     }
     if (fabsl(sum) > 1e-9L * scale) return 0;
@@ -1160,11 +1201,18 @@ static void find_roots(int v)
         found = 0;
         n0 = divisors(ip[0], dv0);
         nn = divisors(ip[ideg], dvn);
+        if (n0 < 0 || nn < 0) {
+            begin(L_STEP);
+            wputs("too many candidates, skipping the rest");
+            end();
+            return;
+        }
         for (i = 0; i < nn && !found; i++) {
             for (j = 0; j < n0 && !found; j++) {
                 if (gcd(dv0[j], dvn[i]) != 1) continue;
                 for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
                     long long p = sgn * dv0[j], q = dvn[i];
+                    poll();
                     if (!try_root(p, q)) continue;
                     found = any = 1;
                     add_root(p, q, 1);
@@ -1222,6 +1270,7 @@ static long long sqpart(long long n, long long *rest)
 {
     long long s = 1, j;
     for (j = 2; j <= n / j && j <= 1000000; j++) {
+        if (!(j & 4095)) poll();
         while (n % (j * j) == 0) {
             n /= j * j;
             s *= j;
@@ -1260,11 +1309,12 @@ static int biquad(int v)
         bqb[0] = bqb[1];
         bqb[1] = t;
     }
-    nbq = 2;
+    nbq = s ? 2 : 1;
+    bqmult = s ? 1 : 2;
     begin(L_STEP);
     wip(v);
     wputs(" = ");
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < nbq; i++) {
         uint8_t e[NV] = { 0 };
         e[v] = 2;
         wputc('(');
@@ -1273,10 +1323,19 @@ static int biquad(int v)
         wmono(qint(-bqa[i]), e, 0);
         wputc(')');
     }
+    if (bqmult > 1) wputs("^2");
     end();
     ideg = 0;
     ip[0] = 1;
     return 1;
+}
+
+static void wmult(int mult)
+{
+    if (mult < 2) return;
+    wputs(" (multiplicity ");
+    wll(mult);
+    wputc(')');
 }
 
 static void wld(long double x)
@@ -1285,7 +1344,7 @@ static void wld(long double x)
     char frac[7];
     int i, neg = x < 0;
     if (neg) x = -x;
-    if (x >= 9e12L) fail("root too big to print");
+    if (!(x < 9e12L)) fail("root too big to print");
     n = (long long)(x * 1000000.0L + 0.5L);
     if (neg && n) wputc('-');
     wll(n / 1000000);
@@ -1327,7 +1386,7 @@ static void wparen(long long n)
     if (n < 0) wputc(')');
 }
 
-static void quad_steps(long long a, long long b, long long c)
+static void quad_steps(long long a, long long b, long long c, int v)
 {
     long long d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c))), r, s;
     int neg = d < 0;
@@ -1365,13 +1424,14 @@ static void quad_steps(long long a, long long b, long long c)
     }
     if (gcd(gcd(b, s), 2 * a) != 1) {
         begin(L_STEP);
-        wputs("x = ");
+        wputc(vars[v]);
+        wputs(" = ");
         wradical(-b, s, r, neg, ckmul(2, a));
         end();
     }
 }
 
-static void quad_result(long long a, long long b, long long c, int v)
+static void quad_result(long long a, long long b, long long c, int v, int mult)
 {
     long long d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c))), r, s, g;
     long double re, im;
@@ -1382,6 +1442,7 @@ static void quad_result(long long a, long long b, long long c, int v)
     wputc(vars[v]);
     wputs(" = ");
     wradical(-b / g, s / g, r, neg, 2 * a / g);
+    wmult(mult);
     end();
     if (r == 1) return;
     re = (long double)-b / (2 * a);
@@ -1402,64 +1463,137 @@ static void quad_result(long long a, long long b, long long c, int v)
         wputs(", ");
         wld(re - im);
     }
+    wmult(mult);
     end();
+}
+
+/* long double math is a softfloat call per operation on the ez80; keeping it in a few out-of-line helpers saves kbs */
+__attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
+{
+    long double t = a->r * b->r - a->i * b->i;
+    a->i = a->r * b->i + a->i * b->r;
+    a->r = t;
+}
+
+__attribute__((noinline)) static void cdiv(Cx *a, const Cx *b)
+{
+    long double m = b->r * b->r + b->i * b->i, t;
+    if (m == 0) m = 1e-30L;
+    t = (a->r * b->r + a->i * b->i) / m;
+    a->i = (a->i * b->r - a->r * b->i) / m;
+    a->r = t;
+}
+
+__attribute__((noinline)) static long double cnorm(const Cx *a)
+{
+    return fabsl(a->r) + fabsl(a->i);
+}
+
+/* a -= b, returns |b| relative to the new a */
+__attribute__((noinline)) static long double csubrel(Cx *a, const Cx *b)
+{
+    a->r -= b->r;
+    a->i -= b->i;
+    return cnorm(b) / (1 + cnorm(a));
+}
+
+/* value of the d-th derivative of monic c (degree n) at z */
+__attribute__((noinline)) static void horner(const long double *c, int n, int d, const Cx *z, Cx *v)
+{
+    long double f;
+    int j, t;
+    v->r = v->i = 0;
+    for (j = n; j >= d; j--) {
+        for (f = c[j], t = 0; t < d; t++) f *= j - t;
+        cmul(v, z);
+        v->r += f;
+    }
 }
 
 static void numeric(void)
 {
     static long double c[MAXD + 1];
-    long double tr, ti, pr, pi, dr, di, m, maxd, wr = 1, wi = 0;
-    int k, j, it, n = ideg;
+    Cx w, u = { 0.4L / 0.98488578L, 0.9L / 0.98488578L }, p, d, t, sum;
+    long double m, maxd, rad = 2, r, tk, step;
+    int k, j, it, mult, n = ideg;
     for (k = 0; k <= n; k++) c[k] = (long double)ip[k] / ip[n];
+    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 so no powl is needed */
+    for (k = 1; k <= n; k++) {
+        for (r = tk = step = 1, j = 0; j < k; j++) step *= 2;
+        for (; tk < fabsl(c[n - k]); tk *= step) r *= 2;
+        if (2 * r > rad) rad = 2 * r;
+    }
+    w.r = rad;
+    w.i = 0;
     for (k = 0; k < n; k++) {
-        zr[k] = wr;
-        zi[k] = wi;
-        tr = wr * 0.4L - wi * 0.9L;
-        wi = wr * 0.9L + wi * 0.4L;
-        wr = tr;
+        z[k] = w;
+        z[k].r -= c[n - 1] / n;
+        zm[k] = 1;
+        cmul(&w, &u);
     }
     for (it = 0; it < 1000; it++) {
+        poll();
         maxd = 0;
         for (k = 0; k < n; k++) {
-            pr = 1;
-            pi = 0;
-            for (j = n - 1; j >= 0; j--) {
-                tr = pr * zr[k] - pi * zi[k] + c[j];
-                pi = pr * zi[k] + pi * zr[k];
-                pr = tr;
-            }
-            dr = 1;
-            di = 0;
+            horner(c, n, 0, &z[k], &p);
+            d.r = 1;
+            d.i = 0;
             for (j = 0; j < n; j++) {
-                long double ar = zr[k] - zr[j], ai = zi[k] - zi[j];
                 if (j == k) continue;
-                tr = dr * ar - di * ai;
-                di = dr * ai + di * ar;
-                dr = tr;
+                t = z[k];
+                csubrel(&t, &z[j]);
+                cmul(&d, &t);
             }
-            m = dr * dr + di * di;
-            if (m == 0) m = 1e-30L;
-            tr = (pr * dr + pi * di) / m;
-            ti = (pi * dr - pr * di) / m;
-            zr[k] -= tr;
-            zi[k] -= ti;
-            m = fabsl(tr) + fabsl(ti);
-            if (m > maxd) maxd = m;
+            cdiv(&p, &d);
+            m = csubrel(&z[k], &p);
+            if (!(m <= maxd)) maxd = m;
         }
-        if (maxd < 1e-15L) break;
+        if (!(maxd < 1e300L)) fail("the numeric solver broke down");
+        if (maxd < 1e-14L) break;
     }
-    nz = n;
-    for (k = 0; k < n; k++)
-        if (fabsl(zi[k]) < 1e-8L * (1 + fabsl(zr[k]))) zi[k] = 0;
-    for (k = 1; k < n; k++) {
-        long double a = zr[k], b = zi[k];
-        for (j = k; j > 0 && ((zi[j - 1] != 0) > (b != 0) || ((zi[j - 1] != 0) == (b != 0) && zr[j - 1] > a)); j--) {
-            zr[j] = zr[j - 1];
-            zi[j] = zi[j - 1];
+    /* repeated roots come back as a tight cluster: merge it, then polish on the derivative where it's a simple root.
+       the last newton step estimates the error */
+    nz = 0;
+    dkerr = 0;
+    for (k = 0; k < n; k++) {
+        if (!zm[k]) continue;
+        sum = z[k];
+        mult = 1;
+        for (j = k + 1; j < n; j++) {
+            t = z[j];
+            csubrel(&t, &z[k]);
+            /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
+            if (!zm[j] || cnorm(&t) > 1e-3L * (1 + cnorm(&z[k]))) continue;
+            sum.r += z[j].r;
+            sum.i += z[j].i;
+            mult++;
+            zm[j] = 0;
         }
-        zr[j] = a;
-        zi[j] = b;
+        sum.r /= mult;
+        sum.i /= mult;
+        for (it = 0, m = 0; it < 8; it++) {
+            horner(c, n, mult - 1, &sum, &p);
+            horner(c, n, mult, &sum, &d);
+            if (d.r == 0 && d.i == 0) break;
+            cdiv(&p, &d);
+            m = csubrel(&sum, &p);
+        }
+        if (!(m <= dkerr)) dkerr = m;
+        if (fabsl(sum.i) < 1e-7L * (1 + fabsl(sum.r))) sum.i = 0;
+        z[nz] = sum;
+        zm[nz++] = mult;
     }
+    for (k = 1; k < nz; k++) {
+        t = z[k];
+        mult = zm[k];
+        for (j = k; j > 0 && ((z[j - 1].i != 0) > (t.i != 0) || ((z[j - 1].i != 0) == (t.i != 0) && z[j - 1].r > t.r)); j--) {
+            z[j] = z[j - 1];
+            zm[j] = zm[j - 1];
+        }
+        z[j] = t;
+        zm[j] = mult;
+    }
+    if (!(dkerr < 1e-3L)) fail("too sensitive to solve numerically");
     begin(L_STEP);
     wputs("no exact formula used for degree ");
     wll(n);
@@ -1471,16 +1605,22 @@ static void numeric_result(int v)
 {
     int k;
     for (k = 0; k < nz; k++) {
-        if (zi[k] < 0) continue;
+        if (z[k].i < 0) continue;
         begin(L_APPROX);
         wputc(vars[v]);
         wputs(" " G_APPROX " ");
-        wld(zr[k]);
-        if (zi[k] > 0) {
+        wld(z[k].r);
+        if (z[k].i > 0) {
             wputs(G_PM);
-            wld(zi[k]);
+            wld(z[k].i);
             wputc('i');
         }
+        wmult(zm[k]);
+        end();
+    }
+    if (nz && dkerr > 1e-7L) {
+        begin(L_APPROX);
+        wputs("these are sensitive, last digits may be off");
         end();
     }
 }
@@ -1536,6 +1676,7 @@ static void do_factor(Poly *p)
         e[v] = 0;
         wmono(qint(-bqa[i]), e, 0);
         wputc(')');
+        if (bqmult > 1) wputs("^2");
     }
     if (ideg >= 1) {
         if (paren) wputc('(');
@@ -1608,7 +1749,7 @@ static void do_solve(Poly *p)
     find_roots(v);
     if (ideg == 2) {
         quad = 1;
-        quad_steps(ip[2], ip[1], ip[0]);
+        quad_steps(ip[2], ip[1], ip[0], v);
     } else if (ideg >= 3 && !biquad(v)) {
         numeric();
     }
@@ -1630,8 +1771,8 @@ static void do_solve(Poly *p)
         }
         end();
     }
-    if (quad) quad_result(ip[2], ip[1], ip[0], v);
-    for (i = 0; i < nbq; i++) quad_result(bqb[i], 0, -bqa[i], v);
+    if (quad) quad_result(ip[2], ip[1], ip[0], v, 1);
+    for (i = 0; i < nbq; i++) quad_result(bqb[i], 0, -bqa[i], v, bqmult);
     numeric_result(v);
 }
 
@@ -1645,7 +1786,7 @@ void cas_run(int cmd, const char *input)
     textlen = 0;
     hidden = 0;
     nv = 0;
-    nroots = nbq = nz = 0;
+    nroots = nbq = nz = nest = 0;
     inexact_q = inexact_r = inexact_d = 0;
     memset(assigned, 0, sizeof assigned);
     for (i = 0; i < POOL; i++) pool[i].used = 0;
