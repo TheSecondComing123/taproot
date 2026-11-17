@@ -2564,11 +2564,12 @@ static void analyze(const Poly *p, int v)
     ideg = intdense(r, v);
     pfree(r);
     if (ideg == 1) {
-        add_root(-ip[0], ip[1], 1);
+        int32_t n = -ip[0], d = ip[1];
+        add_root(n, d, 1);
         begin(L_STEP);
         wip(v);
         say(MORE | OPEN, "=0 gives %c=", vars[v]);
-        wfrac(-ip[0], ip[1]);
+        wfrac(n, d);
         end();
         ideg = 0;
     }
