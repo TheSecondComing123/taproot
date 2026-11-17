@@ -243,10 +243,14 @@ def main():
             ok, why = check_inequality(ref[1], ref[2], ref[3], lines)
         elif cmd == "s" and isinstance(ref, tuple) and ref[0] == "rateq":
             sol = solveset(ref[1] - ref[2], x, domain=S.Complexes)
-            want = [complex(v.evalf()) for v in sol]
-            got, _ = solutions(lines)
-            ok = got is not None and same_roots(sorted(set(got), key=lambda c: (c.real, c.imag)), want)
-            why = f"got {got} want {want}"
+            if not sol.is_FiniteSet:
+                ok = any(t == "every value works" for k, t in lines if k == 1)
+                why = f"identity, sympy says {sol}"
+            else:
+                want = [complex(v.evalf()) for v in sol]
+                got, _ = solutions(lines)
+                ok = got is not None and same_roots(sorted(set(got), key=lambda c: (c.real, c.imag)), want)
+                why = f"got {got} want {want}"
         elif cmd == "s":
             got, _ = solutions(lines)
             want = reference_roots(ref)

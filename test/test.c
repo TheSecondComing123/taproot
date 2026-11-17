@@ -259,7 +259,8 @@ int main(int argc, char **argv)
     check(E, "99999999999999999999", "numbers too big");
     check(E, "3000000000*3000000000", "= 9000000000000000000");
     check(E, "-3000000000*3000000000", "= -9000000000000000000");
-    check(E, "3037000499*3037000499", "numbers too big");
+    check(E, "3037000499*3037000499", "= 9223372030926249001");
+    check(E, "3037000500*3037000500", "numbers too big");
     check(E, "4611686018427387904*2", "numbers too big");
     check(E, "x/0", "division by zero");
     check(E, "x^2, x=y", "= y^2");

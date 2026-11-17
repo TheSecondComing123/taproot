@@ -1,9 +1,10 @@
 #include "cas.h"
 #include <ctype.h>
 #include <limits.h>
-#include <math.h>
 #include <setjmp.h>
 #include <string.h>
+#include <ti/error.h>
+#include <ti/real.h>
 
 #define NV 4
 #define MAXT 64
@@ -20,10 +21,12 @@ typedef struct { long long n, d; } Q;
 typedef struct { Q c; uint8_t e[NV]; } Term;
 typedef struct { uint8_t used; int n; Term t[MAXT]; } Poly;
 typedef struct { Poly *n, *d; } Rat; /* d == 0 means 1 */
-typedef struct { long double r, i; } Cx;
+/* floating point is the os's 14-digit bcd reals: the routines live in rom, so the program carries none */
+typedef real_t R;
+typedef struct { R r, i; } Cx;
 typedef struct { long long p, q; int mult; } Root;
 /* a real point on the number line: a zero of the top ('n'), of the bottom ('d') or a hole ('h') */
-typedef struct { long double v; long long p, q; int mult; char tag; const char *s; } Pt;
+typedef struct { R v; long long p, q; int mult; char tag; const char *s; } Pt;
 
 const char *cas_line[CAS_MAXLINES];
 uint8_t cas_kind[CAS_MAXLINES];
@@ -148,14 +151,19 @@ static void poll(void)
 
 /* ---------- exact rationals ---------- */
 
+/* out of line so the compiler can't spot the divide-back overflow test and turn it into ~2.9 kb of inline code */
+__attribute__((noinline)) static unsigned long long udiv(unsigned long long a, unsigned long long b)
+{
+    return a / b;
+}
+
 static long long ckmul(long long a, long long b)
 {
-    /* any exact overflow test (even divide-back) compiles to ~2.9 kb of inline 64-bit code on the ez80.
-       the long double product is within 2^-53 of the real one, so 9.2e18 < 2^63 is a safe cutoff */
-    long double p;
+    unsigned long long ua, ub;
     if ((unsigned long long)a + 0x7fffffff < 0xffffffffULL && (unsigned long long)b + 0x7fffffff < 0xffffffffULL) return a * b;
-    p = (long double)a * b;
-    if (p >= 9.2e18L || p <= -9.2e18L) too_big();
+    ua = a < 0 ? -(unsigned long long)a : (unsigned long long)a;
+    ub = b < 0 ? -(unsigned long long)b : (unsigned long long)b;
+    if (ua && ub > udiv(LLONG_MAX, ua)) too_big();
     return a * b;
 }
 
@@ -280,6 +288,74 @@ static int qlen(const Q *a)
     w = sw;
     wend = se;
     return n;
+}
+
+/* ---------- os reals ---------- */
+
+/* v as a real: exact up to 14 digits, rounded past that */
+static void rset(R *r, long long v)
+{
+    unsigned long long u = v < 0 ? -(unsigned long long)v : (unsigned long long)v;
+    uint8_t d[20];
+    int n = 0, i, e;
+    memset(r, 0, sizeof *r);
+    r->exp = (int8_t)0x80;
+    if (!u) return;
+    do d[n++] = u % 10; while (u /= 10);
+    e = n - 1;
+    if (n > 14 && d[n - 15] >= 5) {
+        for (i = n - 14; i < n && d[i] == 9; i++) d[i] = 0;
+        if (i == n) {
+            d[n - 1] = 1;
+            e++;
+        } else {
+            d[i]++;
+        }
+    }
+    for (i = 0; i < 14 && i < n; i++) r->mant[i / 2] |= d[n - 1 - i] << (i & 1 ? 0 : 4);
+    r->exp = (int8_t)(0x80 + e);
+    if (v < 0) r->sign = (int8_t)0x80;
+}
+
+static void rfrac(R *r, long long n, long long d)
+{
+    R b;
+    rset(r, n);
+    rset(&b, d);
+    *r = os_RealDiv(r, &b);
+}
+
+static void rten(R *r, int e)
+{
+    memset(r, 0, sizeof *r);
+    r->exp = (int8_t)(0x80 + e);
+    r->mant[0] = 0x10;
+}
+
+static int rzero(const R *a)
+{
+    return !a->mant[0];
+}
+
+static void rabs(R *a)
+{
+    a->sign &= 0x7f;
+}
+
+static int rlt(const R *a, const R *b)
+{
+    return os_RealCompare(a, b) < 0;
+}
+
+/* tol * (1 + |x|) */
+static void rtol(R *r, const R *x, int e)
+{
+    R one, t = *x;
+    rabs(&t);
+    rset(&one, 1);
+    t = os_RealAdd(&t, &one);
+    rten(&one, e);
+    *r = os_RealMul(&t, &one);
 }
 
 /* ---------- polynomials ---------- */
@@ -609,16 +685,16 @@ static void qeval(Q *r, const Poly *p, int v, const Q *x)
     }
 }
 
-static long double ldeval(const Poly *p, int v, long double x)
+static void reval(R *r, const Poly *p, int v, const R *x)
 {
-    long double r = 0, t;
+    R t;
     int i, k;
+    rset(r, 0);
     for (i = 0; i < p->n; i++) {
-        t = (long double)p->t[i].c.n / p->t[i].c.d;
-        for (k = v < 0 ? 0 : p->t[i].e[v]; k > 0; k--) t *= x;
-        r += t;
+        rfrac(&t, p->t[i].c.n, p->t[i].c.d);
+        for (k = v < 0 ? 0 : p->t[i].e[v]; k > 0; k--) t = os_RealMul(&t, x);
+        *r = os_RealAdd(r, &t);
     }
-    return r;
 }
 
 /* ---------- dense one-variable division and gcd ---------- */
@@ -649,11 +725,25 @@ static void monic(Q *c, int deg)
     for (i = 0; i <= deg; i++) qdiv(&c[i], &c[i], &lead);
 }
 
-/* gcd of ga (degree na) and gb (degree nb) into ga, monic. returns its degree, or -1 if the numbers overflowed */
+/* scale c to integer coefficients with no common factor: remainders grow far slower than when made monic */
+static void prim(Q *c, int deg)
+{
+    long long l = 1, g = 0;
+    Q k;
+    int i;
+    for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
+    for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
+    qnorm(&k, l, g);
+    for (i = 0; i <= deg; i++) qmul(&c[i], &c[i], &k);
+}
+
+/* gcd of ga (degree na) and gb (degree nb) into ga, monic. returns its degree, or -1 if the numbers overflowed.
+   integer pseudo-remainders with the common factor divided out each round: euclid over fractions blows
+   past 64 bits on a degree-12 input */
 static int dgcd(int na, int nb)
 {
     static Q t[MAXD + 1];
-    int nr, outer = soft;
+    int i, outer = soft;
     if (!outer) {
         if (setjmp(soft_jmp)) {
             soft = 0;
@@ -661,14 +751,23 @@ static int dgcd(int na, int nb)
         }
         soft = 1;
     }
+    if (na >= 0) prim(ga, na);
+    if (nb >= 0) prim(gb, nb);
     while (nb >= 0) {
-        nr = ddiv(ga, na, gb, nb, t);
+        while (na >= nb) {
+            long long lb = gb[nb].n, la = ga[na].n;
+            int sh = na - nb;
+            for (i = 0; i <= na; i++) ga[i].n = ckmul(ga[i].n, lb);
+            for (i = 0; i <= nb; i++) ga[i + sh].n = ckadd(ga[i + sh].n, -ckmul(la, gb[i].n));
+            for (na--; na >= 0 && !ga[na].n; na--);
+        }
+        if (na >= 0) prim(ga, na);
         memcpy(t, ga, sizeof t);
         memcpy(ga, gb, sizeof t);
         memcpy(gb, t, sizeof t);
+        i = na;
         na = nb;
-        nb = nr;
-        if (nb >= 0) monic(gb, nb);
+        nb = i;
     }
     if (na >= 0) monic(ga, na);
     soft = outer;
@@ -1412,7 +1511,7 @@ static int nbq, bqmult, nquads;
 static struct { long long a, b, c; int mult; } quads[MAXD / 2 + 1];
 static Cx z[MAXD];
 static int zm[MAXD], nz;
-static long double dkerr;
+static R dkerr;
 static Pt pts[MAXPTS];
 static int npts, pstrlen;
 static char pstr[1024];
@@ -1540,23 +1639,23 @@ static int psum(int sgn, long long *out)
 static int try_root(long long p, long long q)
 {
     static long long b[MAXD + 1];
-    long double r = (long double)p / q, sum = 0, scale = 0, pw = 1, t;
-    int k, big = fabsl(r) > 1;
-    if (big) r = 1 / r;
-    for (k = 0; k <= ideg; k++) {
-        t = ip[big ? ideg - k : k] * pw;
-        sum += t;
-        scale += fabsl(t);
-        pw *= r;
+    int k;
+    if (setjmp(soft_jmp)) {
+        soft = 0;
+        return 0;
     }
-    if (fabsl(sum) > 1e-9L * scale) return 0;
+    soft = 1;
     b[ideg] = 0;
     for (k = ideg; k >= 1; k--) {
-        long long t2 = ckadd(ip[k], ckmul(p, b[k]));
-        if (t2 % q) return 0;
-        b[k - 1] = t2 / q;
+        long long t = ckadd(ip[k], ckmul(p, b[k]));
+        if (t % q) break;
+        b[k - 1] = t / q;
     }
-    if (ckadd(ip[0], ckmul(p, b[0]))) return 0;
+    if (k || ckadd(ip[0], ckmul(p, b[0]))) {
+        soft = 0;
+        return 0;
+    }
+    soft = 0;
     for (k = 0; k < ideg; k++) ip[k] = b[k];
     ideg--;
     return 1;
@@ -1587,8 +1686,7 @@ static void wcandidates(int n0, int nn)
 static void find_roots(int v)
 {
     int i, j, sgn, n0 = 0, nn = 0, found, any = 0, h1, hm;
-    long long p1, pm1;
-    long double bound;
+    long long p1, pm1, bound;
     if (ideg < 2) return;
     begin(L_STEP);
     wputs("rational roots " G_PM "p/q: p|");
@@ -1605,13 +1703,15 @@ static void find_roots(int v)
             return;
         }
         /* cheap filters: every root is within the cauchy bound, and p/q a root means (q-p) | P(1), (q+p) | P(-1) */
-        for (bound = 1, i = 0; i < ideg; i++)
-            if (1 + fabsl((long double)ip[i] / ip[ideg]) > bound) bound = 1 + fabsl((long double)ip[i] / ip[ideg]);
+        for (bound = 1, i = 0; i < ideg; i++) {
+            long long a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
+            if (c > bound) bound = c;
+        }
         h1 = psum(1, &p1);
         hm = psum(-1, &pm1);
         for (i = 0; i < nn && !found; i++) {
             for (j = 0; j < n0 && !found; j++) {
-                if ((long double)dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
+                if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
                 for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
                     long long p = sgn * dv0[j], q = dvn[i];
                     if (h1 && (q == p ? p1 != 0 : p1 % (q - p) != 0)) continue;
@@ -1663,10 +1763,13 @@ static void find_roots(int v)
 
 static long long isqrt(long long n)
 {
-    long long r = (long long)sqrtl((long double)n);
-    while (r > 0 && r > n / r) r--;
-    while (r + 1 <= n / (r + 1)) r++;
-    return r;
+    long long x = n, y = n / 2 + 1;
+    if (n < 2) return n;
+    while (y < x) {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
 }
 
 /* ponytail: stops looking for square factors past 10^6, so huge discriminants may not fully simplify */
@@ -1725,7 +1828,7 @@ static int biquad(int v)
         bqa[i] = u.n;
         bqb[i] = u.d;
     }
-    if (fabsl((long double)bqa[0] / bqb[0]) > fabsl((long double)bqa[1] / bqb[1])) {
+    if (ckmul(bqa[0] < 0 ? -bqa[0] : bqa[0], bqb[1]) > ckmul(bqa[1] < 0 ? -bqa[1] : bqa[1], bqb[0])) {
         long long t = bqa[0];
         bqa[0] = bqa[1];
         bqa[1] = t;
@@ -1753,26 +1856,25 @@ static void wmult(int mult)
     wputc(')');
 }
 
-static void wld(long double x)
+/* x rounded to 6 decimals, trailing zeros dropped */
+static void wreal(const R *x)
 {
-    long long n;
-    char frac[7];
-    int i, neg = x < 0;
-    if (neg) x = -x;
-    if (!(x < 9e12L)) fail("root too big to print");
-    n = (long long)(x * 1000000.0L + 0.5L);
-    if (neg && n) wputc('-');
-    wll(n / 1000000);
-    n %= 1000000;
-    if (!n) return;
-    for (i = 5; i >= 0; i--) {
-        frac[i] = '0' + n % 10;
-        n /= 10;
+    R t = os_RealRound(x, 6);
+    int e = (uint8_t)t.exp - 0x80, p, last = 0, k;
+    uint8_t dig[16];
+    for (k = 0; k < 14; k++) dig[k] = (t.mant[k / 2] >> (k & 1 ? 0 : 4)) & 15;
+    if (rzero(&t)) {
+        wputc('0');
+        return;
     }
-    frac[6] = 0;
-    for (i = 5; frac[i] == '0'; i--) frac[i] = 0;
+    if (e > 12) fail("root too big to print");
+    if (t.sign & 0x80) wputc('-');
+    for (p = e < 0 ? 0 : e; p >= 0; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
+    for (p = -1; p >= -6; p--)
+        if (e - p >= 0 && e - p < 14 && dig[e - p]) last = p;
+    if (!last) return;
     wputc('.');
-    wputs(frac);
+    for (p = -1; p >= last; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
 }
 
 /* (num ± k·√r·i^neg)/den, or with sgn != 0 just the + or - root */
@@ -1868,7 +1970,7 @@ static int quad_parts(long long a, long long b, long long c, long long *num, lon
 static void quad_result(long long a, long long b, long long c, int v, int mult)
 {
     long long num, k, r, den, d = disc(a, b, c);
-    long double re, im;
+    R re, im, t;
     int neg = quad_parts(a, b, c, &num, &k, &r, &den);
     begin(L_RESULT);
     wputc(vars[v]);
@@ -1877,112 +1979,178 @@ static void quad_result(long long a, long long b, long long c, int v, int mult)
     wmult(mult);
     end();
     if (r == 1) return;
-    re = (long double)-b / (2 * a);
-    im = sqrtl((long double)(neg ? -d : d)) / (2 * a);
+    rfrac(&re, -b, 2 * a);
+    rset(&im, neg ? -d : d);
+    im = os_RealSqrt(&im);
+    rset(&t, 2 * a);
+    im = os_RealDiv(&im, &t);
     begin(L_APPROX);
     wputc(vars[v]);
     wputs(" " G_APPROX " ");
     if (neg) {
-        if (b) wld(re);
+        if (b) wreal(&re);
         wputs(G_PM);
-        wld(im);
+        wreal(&im);
         wputc('i');
     } else if (!b) {
         wputs(G_PM);
-        wld(im);
+        wreal(&im);
     } else {
-        wld(re + im);
+        t = os_RealAdd(&re, &im);
+        wreal(&t);
         wputs(", ");
-        wld(re - im);
+        t = os_RealSub(&re, &im);
+        wreal(&t);
     }
     wmult(mult);
     end();
 }
 
-/* long double math is a softfloat call per operation on the ez80; keeping it in a few out-of-line helpers saves kbs */
 __attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
 {
-    long double t = a->r * b->r - a->i * b->i;
-    a->i = a->r * b->i + a->i * b->r;
-    a->r = t;
+    R t1 = os_RealMul(&a->r, &b->r), t2 = os_RealMul(&a->i, &b->i), t3 = os_RealMul(&a->r, &b->i), t4 = os_RealMul(&a->i, &b->r);
+    a->r = os_RealSub(&t1, &t2);
+    a->i = os_RealAdd(&t3, &t4);
 }
 
 __attribute__((noinline)) static void cdiv(Cx *a, const Cx *b)
 {
-    long double m = b->r * b->r + b->i * b->i, t;
-    if (m == 0) m = 1e-30L;
-    t = (a->r * b->r + a->i * b->i) / m;
-    a->i = (a->i * b->r - a->r * b->i) / m;
-    a->r = t;
+    R m, t1, t2;
+    m = os_RealMul(&b->r, &b->r);
+    t1 = os_RealMul(&b->i, &b->i);
+    m = os_RealAdd(&m, &t1);
+    if (rzero(&m)) rten(&m, -30);
+    t1 = os_RealMul(&a->r, &b->r);
+    t2 = os_RealMul(&a->i, &b->i);
+    t1 = os_RealAdd(&t1, &t2);
+    t2 = os_RealMul(&a->i, &b->r);
+    a->i = os_RealMul(&a->r, &b->i);
+    a->i = os_RealSub(&t2, &a->i);
+    a->i = os_RealDiv(&a->i, &m);
+    a->r = os_RealDiv(&t1, &m);
 }
 
-__attribute__((noinline)) static long double cnorm(const Cx *a)
+__attribute__((noinline)) static void cnorm(R *r, const Cx *a)
 {
-    return fabsl(a->r) + fabsl(a->i);
+    R t = a->i;
+    *r = a->r;
+    rabs(r);
+    rabs(&t);
+    *r = os_RealAdd(r, &t);
 }
 
-/* a -= b, returns |b| relative to the new a */
-__attribute__((noinline)) static long double csubrel(Cx *a, const Cx *b)
+/* a -= b, r = |b| relative to the new a */
+__attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
 {
-    a->r -= b->r;
-    a->i -= b->i;
-    return cnorm(b) / (1 + cnorm(a));
+    R t, one;
+    a->r = os_RealSub(&a->r, &b->r);
+    a->i = os_RealSub(&a->i, &b->i);
+    cnorm(&t, a);
+    rset(&one, 1);
+    t = os_RealAdd(&t, &one);
+    cnorm(r, b);
+    *r = os_RealDiv(r, &t);
 }
 
 /* value of the d-th derivative of monic c (degree n) at z */
-__attribute__((noinline)) static void horner(const long double *c, int n, int d, const Cx *zz, Cx *v)
+__attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v)
 {
-    long double f;
+    R f;
+    long long k;
     int j, t;
-    v->r = v->i = 0;
+    rset(&v->r, 0);
+    rset(&v->i, 0);
     for (j = n; j >= d; j--) {
-        for (f = c[j], t = 0; t < d; t++) f *= j - t;
+        for (k = 1, t = 0; t < d; t++) k *= j - t;
+        rset(&f, k);
+        f = os_RealMul(&f, &c[j]);
         cmul(v, zz);
-        v->r += f;
+        v->r = os_RealAdd(&v->r, &f);
+    }
+}
+
+/* sum of |d-th derivative coefficient| |x|^k: the scale rounding errors in the d-th derivative work against */
+__attribute__((noinline)) static void hornabs(const R *c, int n, int d, const R *x, R *v)
+{
+    R f;
+    long long k;
+    int j, t;
+    rset(v, 0);
+    for (j = n; j >= d; j--) {
+        for (k = 1, t = 0; t < d; t++) k *= j - t;
+        rset(&f, k);
+        f = os_RealMul(&f, &c[j]);
+        rabs(&f);
+        *v = os_RealMul(v, x);
+        *v = os_RealAdd(v, &f);
     }
 }
 
 static void numeric(int fmult)
 {
-    static long double c[MAXD + 1];
-    Cx w2, u = { 0.4L / 0.98488578L, 0.9L / 0.98488578L }, p, d, t, sum;
-    long double m, maxd, rad = 2, r, tk, stp;
+    static R c[MAXD + 1];
+    static Cx w2, u, p, d, t, sum;
+    static R m, maxd, rad, r, tk, stp, two, eps, tol;
     int k, j, it, mult, n = ideg, base = nz;
-    for (k = 0; k <= n; k++) c[k] = (long double)ip[k] / ip[n];
-    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 so no powl is needed */
-    for (k = 1; k <= n; k++) {
-        for (r = tk = stp = 1, j = 0; j < k; j++) stp *= 2;
-        for (; tk < fabsl(c[n - k]); tk *= stp) r *= 2;
-        if (2 * r > rad) rad = 2 * r;
+    /* a coefficient past 14 significant digits rounds, and the roots that come back belong to a different polynomial */
+    for (k = 0; k <= n; k++) {
+        unsigned long long u = ip[k] < 0 ? -(unsigned long long)ip[k] : (unsigned long long)ip[k];
+        while (u && !(u % 10)) u /= 10;
+        if (u >= 100000000000000ULL) fail("too sensitive to solve numerically");
     }
-    w2.r = rad;
-    w2.i = 0;
+    for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
+    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 */
+    rset(&rad, 1);
+    rset(&two, 2);
+    for (k = 1; k <= n; k++) {
+        R a = c[n - k];
+        rabs(&a);
+        for (rset(&r, 1), rset(&tk, 1), rset(&stp, 1), j = 0; j < k; j++) stp = os_RealMul(&stp, &two);
+        for (; rlt(&tk, &a); tk = os_RealMul(&tk, &stp)) r = os_RealMul(&r, &two);
+        if (rlt(&rad, &r)) rad = r;
+    }
+    /* work in y = x/rad so every root sits near the unit circle and nothing overflows the os reals */
+    for (rset(&r, 1), k = n - 1; k >= 0; k--) {
+        r = os_RealMul(&r, &rad);
+        c[k] = os_RealDiv(&c[k], &r);
+    }
+    rset(&w2.r, 2);
+    rset(&w2.i, 0);
+    rset(&u.r, 97);
+    u.r = os_RealSqrt(&u.r);
+    rset(&u.i, 9);
+    u.i = os_RealDiv(&u.i, &u.r);
+    rset(&m, 4);
+    u.r = os_RealDiv(&m, &u.r);
+    rset(&m, n);
+    m = os_RealDiv(&c[n - 1], &m);
     for (k = base; k < base + n; k++) {
         z[k] = w2;
-        z[k].r -= c[n - 1] / n;
+        z[k].r = os_RealSub(&z[k].r, &m);
         zm[k] = 1;
         cmul(&w2, &u);
     }
+    rten(&eps, -12);
     for (it = 0; it < 1000; it++) {
         poll();
-        maxd = 0;
+        rset(&maxd, 0);
         for (k = base; k < base + n; k++) {
             horner(c, n, 0, &z[k], &p);
-            d.r = 1;
-            d.i = 0;
+            rset(&d.r, 1);
+            rset(&d.i, 0);
             for (j = base; j < base + n; j++) {
                 if (j == k) continue;
                 t = z[k];
-                csubrel(&t, &z[j]);
+                csubrel(&m, &t, &z[j]);
                 cmul(&d, &t);
             }
             cdiv(&p, &d);
-            m = csubrel(&z[k], &p);
-            if (!(m <= maxd)) maxd = m;
+            csubrel(&m, &z[k], &p);
+            if (rlt(&maxd, &m)) maxd = m;
         }
-        if (!(maxd < 1e300L)) fail("the numeric solver broke down");
-        if (maxd < 1e-14L) break;
+        if (rlt(&maxd, &eps)) break;
     }
+
     /* repeated roots come back as a tight cluster: merge it, then polish on the derivative where it's a simple root.
        the last newton step estimates the error */
     nz = base;
@@ -1991,40 +2159,105 @@ static void numeric(int fmult)
         sum = z[k];
         mult = 1;
         for (j = k + 1; j < base + n; j++) {
+            /* compared in x units, not the scaled y ones */
             t = z[j];
-            csubrel(&t, &z[k]);
+            csubrel(&m, &t, &z[k]);
+            cnorm(&m, &t);
+            m = os_RealMul(&m, &rad);
+            cnorm(&tol, &z[k]);
+            tol = os_RealMul(&tol, &rad);
+            rtol(&tol, &tol, -3);
             /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
-            if (!zm[j] || cnorm(&t) > 1e-3L * (1 + cnorm(&z[k]))) continue;
-            sum.r += z[j].r;
-            sum.i += z[j].i;
+            if (!zm[j] || rlt(&tol, &m)) continue;
+            sum.r = os_RealAdd(&sum.r, &z[j].r);
+            sum.i = os_RealAdd(&sum.i, &z[j].i);
             mult++;
             zm[j] = 0;
         }
-        sum.r /= mult;
-        sum.i /= mult;
-        for (it = 0, m = 0; it < 8; it++) {
+        rset(&m, mult);
+        sum.r = os_RealDiv(&sum.r, &m);
+        sum.i = os_RealDiv(&sum.i, &m);
+        for (rset(&m, 0), it = 0; it < 8; it++) {
             horner(c, n, mult - 1, &sum, &p);
             horner(c, n, mult, &sum, &d);
-            if (d.r == 0 && d.i == 0) break;
+            if (rzero(&d.r) && rzero(&d.i)) break;
             cdiv(&p, &d);
-            m = csubrel(&sum, &p);
+            csubrel(&m, &sum, &p);
         }
-        if (!(m <= dkerr)) dkerr = m;
-        if (fabsl(sum.i) < 1e-7L * (1 + fabsl(sum.r))) sum.i = 0;
+        /* forward error ~ the last newton step plus the condition number times the reals' 1e-14 rounding:
+           an ill-conditioned expansion like (x+2)^40-1 converges nicely to roots of the rounded polynomial */
+        {
+            R ay, num;
+            cnorm(&ay, &sum);
+            hornabs(c, n, mult - 1, &ay, &num);
+            horner(c, n, mult, &sum, &d);
+            cnorm(&tol, &d);
+            rset(&eps, 1);
+            ay = os_RealAdd(&ay, &eps);
+            tol = os_RealMul(&tol, &ay);
+            rten(&eps, -14);
+            num = os_RealMul(&num, &eps);
+            if (rzero(&tol)) rten(&tol, -99);
+            num = os_RealDiv(&num, &tol);
+            m = os_RealAdd(&m, &num);
+        }
+        if (rlt(&dkerr, &m)) dkerr = m;
+        sum.r = os_RealMul(&sum.r, &rad);
+        sum.i = os_RealMul(&sum.i, &rad);
+        /* a merged cluster only knows its root to about eps^(1/mult), so it gets a looser real-or-not test */
+        rtol(&tol, &sum.r, mult > 1 ? -4 : -7);
+        t.r = sum.i;
+        rabs(&t.r);
+        if (rlt(&t.r, &tol)) rset(&sum.i, 0);
         z[nz] = sum;
         zm[nz++] = mult * fmult;
+    }
+    /* complex roots of a real polynomial come in conjugate pairs, so a loner is a real root whose cluster
+       spread too wide for 14 digits: make it real and fold it into the nearest real cluster */
+    for (k = base; k < nz; k++) {
+        if (rzero(&z[k].i)) continue;
+        for (j = base; j < nz; j++) {
+            if (j == k || zm[j] != zm[k]) continue;
+            t = z[j];
+            t.i = os_RealAdd(&t.i, &z[k].i);
+            t.r = os_RealSub(&t.r, &z[k].r);
+            cnorm(&m, &t);
+            rtol(&tol, &z[k].r, -3);
+            if (rlt(&m, &tol)) break;
+        }
+        if (j == nz) {
+            rset(&z[k].i, 0);
+            zm[k] = -zm[k]; /* marks a loner for the next pass */
+        }
+    }
+    for (k = base; k < nz; k++) {
+        if (zm[k] >= 0) continue;
+        zm[k] = -zm[k];
+        for (j = base; j < nz; j++) {
+            if (j == k || !rzero(&z[j].i) || zm[j] < 2) continue;
+            m = os_RealSub(&z[j].r, &z[k].r);
+            rabs(&m);
+            rtol(&tol, &z[k].r, -2);
+            if (rlt(&tol, &m)) continue;
+            /* the cluster's polished value is the better one; it just gains the loner's multiplicity */
+            zm[j] += zm[k];
+            z[k] = z[--nz];
+            zm[k--] = zm[nz];
+            break;
+        }
     }
     for (k = 1; k < nz; k++) {
         t = z[k];
         mult = zm[k];
-        for (j = k; j > 0 && ((z[j - 1].i != 0) > (t.i != 0) || ((z[j - 1].i != 0) == (t.i != 0) && z[j - 1].r > t.r)); j--) {
+        for (j = k; j > 0 && (!rzero(&z[j - 1].i) > !rzero(&t.i) || (!rzero(&z[j - 1].i) == !rzero(&t.i) && rlt(&t.r, &z[j - 1].r))); j--) {
             z[j] = z[j - 1];
             zm[j] = zm[j - 1];
         }
         z[j] = t;
         zm[j] = mult;
     }
-    if (!(dkerr < 1e-3L)) fail("too sensitive to solve numerically");
+    rten(&m, -3);
+    if (!rlt(&dkerr, &m)) fail("too sensitive to solve numerically");
     begin(L_STEP);
     wputs("no exact formula used for degree ");
     wll(n);
@@ -2034,22 +2267,24 @@ static void numeric(int fmult)
 
 static void numeric_result(int v)
 {
+    R lim;
     int k;
     for (k = 0; k < nz; k++) {
-        if (z[k].i < 0) continue;
+        if (z[k].i.sign & 0x80) continue;
         begin(L_APPROX);
         wputc(vars[v]);
         wputs(" " G_APPROX " ");
-        wld(z[k].r);
-        if (z[k].i > 0) {
+        wreal(&z[k].r);
+        if (!rzero(&z[k].i)) {
             wputs(G_PM);
-            wld(z[k].i);
+            wreal(&z[k].i);
             wputc('i');
         }
         wmult(zm[k]);
         end();
     }
-    if (nz && dkerr > 1e-7L) {
+    rten(&lim, -7);
+    if (nz && rlt(&lim, &dkerr)) {
         begin(L_APPROX);
         wputs("these are sensitive, last digits may be off");
         end();
@@ -2271,7 +2506,7 @@ static void analyze(const Poly *p, int v)
     Q k;
     uint8_t m[NV];
     nroots = nbq = nz = nquads = 0;
-    dkerr = 0;
+    rset(&dkerr, 0);
     r = gcf(p, &k, m);
     if (m[v]) {
         add_root(0, 1, m[v]);
@@ -2334,18 +2569,22 @@ static int ptpri(char tag)
     return tag == 'd' ? 2 : tag == 'h';
 }
 
-static void addpt(long double x, long long p, long long q, int mult, char tag, const char *str)
+static void addpt(const R *x, long long p, long long q, int mult, char tag, const char *str)
 {
+    R d, tol;
     int i;
     if (tag == 'h') mult = 0;
+    rtol(&tol, x, -9);
     for (i = 0; i < npts; i++) {
-        if (fabsl(pts[i].v - x) > 1e-9L * (1 + fabsl(x))) continue;
+        d = os_RealSub(&pts[i].v, x);
+        rabs(&d);
+        if (rlt(&tol, &d)) continue;
         pts[i].mult += mult;
         if (ptpri(tag) > ptpri(pts[i].tag)) pts[i].tag = tag;
         return;
     }
     if (npts == MAXPTS) return;
-    pts[npts].v = x;
+    pts[npts].v = *x;
     pts[npts].p = p;
     pts[npts].q = q;
     pts[npts].mult = mult;
@@ -2357,14 +2596,19 @@ static void addpt(long double x, long long p, long long q, int mult, char tag, c
 static void quadpts(long long a, long long b, long long c, int mult, char tag)
 {
     long long num, k, r, den;
-    long double sq;
+    R sq, x, t;
     int sgn;
     if (quad_parts(a, b, c, &num, &k, &r, &den)) return;
-    sq = sqrtl((long double)disc(a, b, c));
+    rset(&sq, disc(a, b, c));
+    sq = os_RealSqrt(&sq);
     for (sgn = -1; sgn <= 1; sgn += 2) {
+        rset(&x, -b);
+        x = sgn < 0 ? os_RealSub(&x, &sq) : os_RealAdd(&x, &sq);
+        rset(&t, 2 * a);
+        x = os_RealDiv(&x, &t);
         pt_begin();
         wradical(num, k, r, 0, den, a > 0 ? sgn : -sgn);
-        addpt((-b + sgn * sq) / (2.0L * a), 0, 0, mult, tag, pt_end());
+        addpt(&x, 0, 0, mult, tag, pt_end());
     }
 }
 
@@ -2374,10 +2618,12 @@ static int collect(char tag)
     int i, total = 0;
     for (i = 0; i < nroots; i++) {
         Q x;
+        R rx;
         qnorm(&x, roots[i].p, roots[i].q);
+        rfrac(&rx, x.n, x.d);
         pt_begin();
         wq(&x);
-        addpt((long double)x.n / x.d, x.n, x.d, roots[i].mult, tag, pt_end());
+        addpt(&rx, x.n, x.d, roots[i].mult, tag, pt_end());
         total += roots[i].mult;
     }
     for (i = 0; i < nquads; i++) {
@@ -2391,10 +2637,10 @@ static int collect(char tag)
         total += 2 * bqmult;
     }
     for (i = 0; i < nz; i++) {
-        if (z[i].i) continue;
+        if (!rzero(&z[i].i)) continue;
         pt_begin();
-        wld(z[i].r);
-        addpt(z[i].r, 0, 0, zm[i], tag, pt_end());
+        wreal(&z[i].r);
+        addpt(&z[i].r, 0, 0, zm[i], tag, pt_end());
         total += zm[i];
     }
     return total;
@@ -2405,7 +2651,7 @@ static void sortpts(void)
     int i, j;
     for (i = 1; i < npts; i++) {
         Pt t = pts[i];
-        for (j = i; j > 0 && pts[j - 1].v > t.v; j--) pts[j] = pts[j - 1];
+        for (j = i; j > 0 && rlt(&t.v, &pts[j - 1].v); j--) pts[j] = pts[j - 1];
         pts[j] = t;
     }
 }
@@ -2757,7 +3003,7 @@ static void do_factor(Rat r)
 
 static int rootcmp(const Root *a, const Root *b)
 {
-    long double x = (long double)a->p / a->q, y = (long double)b->p / b->q;
+    long long x = ckmul(a->p, b->q), y = ckmul(b->p, a->q);
     return x < y ? -1 : x > y;
 }
 
@@ -3289,7 +3535,7 @@ static void do_zeros(Rat r)
     sortpts();
     {
         int k, zero_out = 0;
-        for (k = 0; k < npts; k++) zero_out |= fabsl(pts[k].v) < 1e-12L;
+        for (k = 0; k < npts; k++) zero_out |= rzero(&pts[k].v);
         if (!zero_out) {
             qset(&x, 0);
             qeval(&y0, r.n, v, &x);
@@ -3323,8 +3569,13 @@ static void do_zeros(Rat r)
                     wputs(", y = ");
                     wq(&y0);
                 } else {
+                    R yn, yd;
+                    reval(&yn, r.n, v, &pts[k].v);
+                    rset(&yd, 1);
+                    if (r.d) reval(&yd, r.d, v, &pts[k].v);
+                    yn = os_RealDiv(&yn, &yd);
                     wputs(", y " G_APPROX " ");
-                    wld(ldeval(r.n, v, pts[k].v) / (r.d ? ldeval(r.d, v, pts[k].v) : 1));
+                    wreal(&yn);
                 }
             }
             end();
@@ -3630,7 +3881,7 @@ static int total_degree(const Poly *p)
     return d;
 }
 
-static void wpair(int u, const Q *qu, long double lu, int v, const Q *qv, long double lv)
+static void wpair(int u, const Q *qu, const R *lu, int v, const Q *qv, const R *lv)
 {
     int exact = qu != 0;
     begin(exact ? L_RESULT : L_APPROX);
@@ -3640,10 +3891,10 @@ static void wpair(int u, const Q *qu, long double lu, int v, const Q *qv, long d
     wputc(vars[u < v ? v : u]);
     wputs(exact ? ") = (" : ") " G_APPROX " (");
     if (exact) wq(u < v ? qu : qv);
-    else wld(u < v ? lu : lv);
+    else wreal(u < v ? lu : lv);
     wputs(", ");
     if (exact) wq(u < v ? qv : qu);
-    else wld(u < v ? lv : lu);
+    else wreal(u < v ? lv : lu);
     wputc(')');
     end();
 }
@@ -3706,7 +3957,11 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
     }
     for (i = 0; i < npts; i++) {
         if (pts[i].q) continue;
-        wpair(u, 0, ldeval(expr.n, v, pts[i].v), v, 0, pts[i].v);
+        {
+            R yv;
+            reval(&yv, expr.n, v, &pts[i].v);
+            wpair(u, 0, &yv, v, 0, &pts[i].v);
+        }
     }
     (void)e;
 }
@@ -3814,7 +4069,18 @@ void cas_run(int cmd, const char *input)
     domv = -1;
     memset(assigned, 0, sizeof assigned);
     for (i = 0; i < POOL; i++) pool[i].used = 0;
-    if (setjmp(fail_jmp)) return;
+    /* an os math error (a real past 1e99) lands here with the handler already gone. the handler goes
+       on before setjmp so a fail() longjmp comes back with the stack os_PopErrorHandler expects */
+    if (os_PushErrorHandler()) {
+        begin(L_ERROR);
+        wputs("a number got too big for the calculator");
+        end();
+        return;
+    }
+    if (setjmp(fail_jmp)) {
+        os_PopErrorHandler();
+        return;
+    }
 
     for (p = input; *p; p++)
         if (isalpha((unsigned char)*p)) addvar(tolower((unsigned char)*p));
@@ -3836,6 +4102,7 @@ void cas_run(int cmd, const char *input)
 
     if (cmd == CMD_SYSTEM) {
         do_system(part, pend, cur + 1);
+        os_PopErrorHandler();
         return;
     }
     rel = find_rel(part[0], pend[0], &at, &rlen);
@@ -3868,4 +4135,5 @@ void cas_run(int cmd, const char *input)
     case CMD_ZEROS: do_zeros(r); break;
     case CMD_INVERSE: do_inverse(r); break;
     }
+    os_PopErrorHandler();
 }
