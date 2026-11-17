@@ -3673,123 +3673,101 @@ static void do_inverse(Rat r)
 /* ---------- systems ---------- */
 
 static Q mx[NV + 1][NV + 1];
-static int mrows, mcols, mvar[NV];
+static int mcols, mvar[NV];
 
-static void wrow(int r)
+static void wrow(const Q *m)
 {
-    uint8_t e[NV];
     int j, first = 1;
-    for (j = 0; j < mcols; j++) {
-        if (!mx[r][j].n) continue;
-        memset(e, 0, NV);
-        e[mvar[j]] = 1;
-        wmono(&mx[r][j], e, first);
+    for (j = 0; j < mcols; j++, m++) {
+        if (!m->n) continue;
+        say(MORE | OPEN, first ? "%M%c" : "%T%c", m, vars[mvar[j]]);
         first = 0;
     }
     if (first) wputc('0');
-    say(MORE | OPEN, "=%q", &mx[r][mcols]);
-}
-
-static void rowop(int r, int p, const Q *f)
-{
-    Q t;
-    int j;
-    for (j = 0; j <= mcols; j++) {
-        qmul(&t, f, &mx[p][j]);
-        qsub(&mx[r][j], &mx[r][j], &t);
-    }
+    say(MORE, "=%q", m);
 }
 
 static void linear_system(Poly **eq, int n)
 {
-    int i, j, row = 0, piv[NV + 1], col, free_ = 0;
-    uint8_t e[NV];
-    mrows = n;
-    for (i = 0; i < n; i++)
-        for (j = 0; j <= mcols; j++) qset(&mx[i][j], 0);
-    for (i = 0; i < n; i++)
-        for (j = 0; j < eq[i]->n; j++) {
-            const Term *t = &eq[i]->t[j];
-            int k, c = mcols;
-            for (k = 0; k < mcols; k++)
-                if (t->e[mvar[k]]) c = k;
-            mx[i][c] = t->c;
-            if (c == mcols) mx[i][c].n = -mx[i][c].n;
-        }
+    Q *rows[NV + 1], *m, *pr, f, t;
+    int i, j, row = 0, piv[NV + 1], col;
     step("as rows:");
     for (i = 0; i < n; i++) {
+        const Term *tm = eq[i]->t;
+        m = rows[i] = mx[i];
+        for (j = 0; j <= mcols; j++) qset(&m[j], 0);
+        for (j = 0; j < eq[i]->n; j++, tm++) {
+            int k, c = mcols;
+            for (k = 0; k < mcols; k++)
+                if (tm->e[mvar[k]]) c = k;
+            m[c] = tm->c;
+            if (c == mcols) m[c].n = -m[c].n;
+        }
         say(L_STEP | OPEN, "R%d: ", i + 1);
-        wrow(i);
-        end();
+        wrow(m);
     }
     for (col = 0; col < mcols && row < n; col++) {
         int p;
-        for (p = row; p < n && !mx[p][col].n; p++);
+        for (p = row; p < n && !rows[p][col].n; p++);
         if (p == n) continue;
+        pr = rows[p];
         if (p != row) {
-            for (j = 0; j <= mcols; j++) {
-                Q t = mx[p][j];
-                mx[p][j] = mx[row][j];
-                mx[row][j] = t;
-            }
+            rows[p] = rows[row];
+            rows[row] = pr;
             say(L_STEP, "swap R%d and R%d", row + 1, p + 1);
         }
-        if (!qone(&mx[row][col])) {
-            static Q f;
-            f = mx[row][col];
-            for (j = 0; j <= mcols; j++) qdiv(&mx[row][j], &mx[row][j], &f);
+        if (!qone(&pr[col])) {
+            f = pr[col];
+            for (j = 0; j <= mcols; j++) qdiv(&pr[j], &pr[j], &f);
             say(L_STEP | OPEN, "R%d = R%d/%Q: ", row + 1, row + 1, &f);
-            wrow(row);
-            end();
+            wrow(pr);
         }
         for (i = 0; i < n; i++) {
-            static Q f;
-            f = mx[i][col];
+            m = rows[i];
+            f = m[col];
             if (i == row || !f.n) continue;
-            rowop(i, row, &f);
-            say(L_STEP | OPEN, "R%d = R%d%c", i + 1, i + 1, f.n < 0 ? '+' : '-');
-            if (f.n < 0) f.n = -f.n;
-            if (!qone(&f)) wqpar(&f);
-            say(MORE | OPEN, "R%d: ", row + 1);
-            wrow(i);
-            end();
+            f.n = -f.n;
+            for (j = 0; j <= mcols; j++) {
+                qmul(&t, &f, &pr[j]);
+                qadd(&m[j], &m[j], &t);
+            }
+            say(L_STEP | OPEN, "R%d = R%d%TR%d: ", i + 1, i + 1, &f, row + 1);
+            wrow(m);
         }
         piv[row++] = col;
     }
     for (i = row; i < n; i++) {
-        if (!mx[i][mcols].n) continue;
-        say(L_STEP, "R%d says 0=%q", i + 1, &mx[i][mcols]);
+        m = rows[i];
+        if (!m[mcols].n) continue;
+        say(L_STEP, "R%d says 0=%q", i + 1, &m[mcols]);
         say(L_RESULT, "no solution");
         return;
     }
     for (i = 0; i < row; i++) {
+        int first = 1;
+        m = rows[i];
         say(L_RESULT | OPEN, "%c = ", vars[mvar[piv[i]]]);
-        {
-            int first = 1;
-            if (mx[i][mcols].n) {
-                wq(&mx[i][mcols]);
-                first = 0;
-            }
-            for (j = piv[i] + 1; j < mcols; j++) {
-                Q t = mx[i][j];
-                if (!t.n) continue;
-                t.n = -t.n;
-                memset(e, 0, NV);
-                e[mvar[j]] = 1;
-                wmono(&t, e, first);
-                first = 0;
-            }
-            if (first) wputc('0');
+        if (m[mcols].n) {
+            wq(&m[mcols]);
+            first = 0;
         }
+        for (j = piv[i] + 1; j < mcols; j++) {
+            if (!m[j].n) continue;
+            m[j].n = -m[j].n;
+            say(MORE | OPEN, first ? "%M%c" : "%T%c", &m[j], vars[mvar[j]]);
+            first = 0;
+        }
+        if (first) wputc('0');
         end();
     }
-    for (j = 0; j < mcols; j++) {
-        for (i = 0; i < row && piv[i] != j; i++);
-        if (i < row) continue;
-        free_ = 1;
+    for (i = 0, j = 0; j < mcols; j++) {
+        if (i < row && piv[i] == j) {
+            i++;
+            continue;
+        }
         say(L_RESULT, "%c can be any number", vars[mvar[j]]);
     }
-    if (free_) step("infinitely many solutions");
+    if (row < mcols) step("infinitely many solutions");
 }
 
 static int total_degree(const Poly *p)
