@@ -2066,12 +2066,11 @@ __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
 /* a -= b, r = |b| relative to the new a */
 __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
 {
-    R t, one;
+    R t;
     xsub(&a->r, &a->r, &b->r);
     xsub(&a->i, &a->i, &b->i);
     cnorm(&t, a);
-    rseti(&one, 1);
-    xadd(&t, &t, &one);
+    rtol(&t, &t, 0);
     cnorm(r, b);
     xdiv(r, r, &t);
 }
