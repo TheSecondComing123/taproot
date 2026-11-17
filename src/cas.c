@@ -1318,17 +1318,16 @@ static Rat patom(void)
     Rat r;
     if (isdigit(ch) || ch == '.') {
         int32_t n = 0, d = 1;
-        int digits = 0;
-        while (s < send && isdigit((unsigned char)*s)) {
-            n = ckadd(ckmul(n, 10), *s++ - '0');
-            digits++;
-        }
-        if (s < send && *s == '.') {
-            s++;
-            while (s < send && isdigit((unsigned char)*s)) {
-                n = ckadd(ckmul(n, 10), *s++ - '0');
-                d = ckmul(d, 10);
+        int digits = 0, dot = 0;
+        for (; s < send; s++) {
+            if (isdigit((unsigned char)*s)) {
+                n = ckadd(ckmul(n, 10), *s - '0');
+                if (dot) d = ckmul(d, 10);
                 digits++;
+            } else if (*s == '.' && !dot) {
+                dot = 1;
+            } else {
+                break;
             }
         }
         if (!digits) fail("a lone . isn't a number");
@@ -1364,7 +1363,7 @@ static Rat ppower(void)
     if (peek() != '^') return b;
     s++;
     ex = punary();
-    if (!isnum(ex, &q) || q.d != 1) {
+    if (ex.d || !isconst(ex.n, &q) || q.d != 1) {
         say(L_ERROR | OPEN, "exponent must be a whole number (got %r)", ex);
         die();
     }
@@ -1392,13 +1391,12 @@ static Rat punary(void)
 }
 
 /* a product of two polynomials, one with several terms, gets its own step */
-static Rat rmul_shown(Rat a, Rat b)
+static Rat rmul_shown(const Rat *a, const Rat *b)
 {
-    Rat r = rmul(a, b);
+    Rat r = rmul(*a, *b);
     Q c;
-    if (!a.d && !b.d && !isconst(a.n, &c) && !isconst(b.n, &c) && (a.n->n > 1 || b.n->n > 1)) {
-        say(L_STEP | OPEN, a.n->n > 1 ? "(%p)" : "%p", a.n);
-        say(MORE, "(%p) = %p", b.n, r.n);
+    if (!a->d && !b->d && !isconst(a->n, &c) && !isconst(b->n, &c) && (a->n->n > 1 || b->n->n > 1)) {
+        say(L_STEP, a->n->n > 1 ? "(%p)(%p) = %p" : "%p(%p) = %p", a->n, b->n, r.n);
     }
     return r;
 }
@@ -1411,27 +1409,26 @@ static Rat pterm(void)
         if (ch == '*' || ch == '/') {
             s++;
             b = punary();
-            r = ch == '*' ? rmul_shown(a, b) : rdiv(a, b);
         } else if (isalnum(ch) || ch == '(' || ch == '.') {
             b = ppower();
-            r = rmul_shown(a, b);
         } else {
             return a;
         }
+        r = ch == '/' ? rdiv(a, b) : rmul_shown(&a, &b);
         rnext(&a, &b, &r);
     }
 }
 
-static int proper(Rat t)
+static int proper(const Rat *t)
 {
-    int v = ratvar(t);
-    return !t.d || (v >= 0 && pdeg(t.n, v) < pdeg(t.d, v));
+    int v = ratvar(*t);
+    return !t->d || (v >= 0 && pdeg(t->n, v) < pdeg(t->d, v));
 }
 
 static Rat pexpr(void)
 {
     Rat a = pterm(), b, r;
-    int top = !nest, terms = 1, fracs = !!a.d, mixed_ok = proper(a);
+    int top = !nest, terms = 1, fracs = !!a.d, mixed_ok = proper(&a);
     for (;;) {
         int ch = peek();
         if (ch != '+' && ch != '-') break;
@@ -1439,7 +1436,7 @@ static Rat pexpr(void)
         b = pterm();
         terms++;
         fracs += !!b.d;
-        mixed_ok &= proper(b);
+        mixed_ok &= proper(&b);
         r = radd(a, b, ch == '-', 1);
         rnext(&a, &b, &r);
     }
@@ -1503,7 +1500,7 @@ static int exprvals(void)
     Q q;
     int v;
     for (v = 0; v < NV; v++)
-        if (assigned[v] && !isnum(val[v], &q)) return 1;
+        if (assigned[v] && (val[v].d || !isconst(val[v].n, &q))) return 1;
     return 0;
 }
 
