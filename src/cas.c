@@ -3730,67 +3730,38 @@ static void linear_system(Poly **eq, int n)
     if (row < mcols) step("infinitely many solutions");
 }
 
-static int total_degree(const Poly *p)
-{
-    int i, v, d = 0;
-    for (i = 0; i < p->n; i++) {
-        int t = 0;
-        for (v = 0; v < NV; v++) t += p->t[i].e[v];
-        if (t > d) d = t;
-    }
-    return d;
-}
-
-static void wpair(int u, const Q *qu, const R *lu, int v, const Q *qv, const R *lv)
-{
-    int exact = qu != 0;
-    say((exact ? L_RESULT : L_APPROX) | OPEN, "(%c, %c", vars[u < v ? u : v], vars[u < v ? v : u]);
-    wputs(exact ? ") = (" : ") " G_APPROX " (");
-    if (exact) wq(u < v ? qu : qv);
-    else wreal(u < v ? lu : lv);
-    wputs(", ");
-    if (exact) wq(u < v ? qv : qu);
-    else wreal(u < v ? lv : lu);
-    say(MORE, ")");
-}
-
 /* one linear and one polynomial equation in two variables: substitute */
 static void substitution(Poly *lin, Poly *other, int u, int v)
 {
     Rat expr, sub;
     static Q cu, t, x;
-    int i;
-    uint8_t e[NV] = { 0 };
-    qset(&cu, 0);
-    for (i = 0; i < lin->n; i++)
-        if (lin->t[i].e[u]) cu = lin->t[i].c;
+    const Term *tm;
+    int i, lo = vars[u < v ? u : v], hi = vars[u < v ? v : u];
+    for (i = 0, tm = lin->t; i < lin->n; i++, tm++)
+        if (tm->e[u]) cu = tm->c;
     /* u = -(lin - cu·u)/cu */
     expr.n = pnew();
-    for (i = 0; i < lin->n; i++) {
-        if (lin->t[i].e[u]) continue;
-        qdiv(&t, &lin->t[i].c, &cu);
+    for (i = 0, tm = lin->t; i < lin->n; i++, tm++) {
+        if (tm->e[u]) continue;
+        qdiv(&t, &tm->c, &cu);
         t.n = -t.n;
-        addterm(expr.n, &t, lin->t[i].e);
+        addterm(expr.n, &t, tm->e);
     }
     expr.d = 0;
     say(L_STEP, "from the linear one: %c = %r", vars[u], expr);
-    memset(assigned, 0, sizeof assigned);
     assigned[u] = 1;
     val[u] = expr;
     sub = psubst(other);
-    assigned[u] = 0;
     say(L_STEP, "substitute: %r=0", sub);
     if (sub.d || pdeg(sub.n, v) < 1) {
-        begin(L_RESULT);
-        wputs(sub.n->n ? "no solution" : "infinitely many solutions");
-        end();
+        say(L_RESULT, sub.n->n ? "no solution" : "infinitely many solutions");
         return;
     }
     analyze(sub.n, v);
     for (i = 0; i < nroots; i++) {
         qnorm(&x, roots[i].p, roots[i].q);
         qeval(&t, expr.n, v, &x);
-        wpair(u, &t, 0, v, &x, 0);
+        say(L_RESULT, "(%c, %c) = (%q, %q)", lo, hi, u < v ? &t : &x, u < v ? &x : &t);
     }
     i = nroots;
     npts = pstrlen = 0;
@@ -3800,24 +3771,24 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
         say(L_RESULT, "no real solutions");
     }
     for (i = 0; i < npts; i++) {
+        R yv, *xv = &pts[i].v;
         if (pts[i].q) continue;
-        {
-            R yv;
-            reval(&yv, expr.n, v, &pts[i].v);
-            wpair(u, 0, &yv, v, 0, &pts[i].v);
-        }
+        reval(&yv, expr.n, v, xv);
+        say(L_APPROX, "(%c, %c) " G_APPROX " (%R, %R)", lo, hi, u < v ? &yv : xv, u < v ? xv : &yv);
     }
-    (void)e;
 }
 
 static void do_system(const char **part, const char **pend, int n)
 {
     static Poly *eq[NV + 1];
-    int i, v, used[NV] = { 0 }, nonlin = -1, lin = -1;
+    int i, j, v, nonlin = -1, lin = -1, u = -1;
+    uint8_t used[NV] = { 0 };
+    const Term *t;
     if (n < 2) fail("a system needs at least two equations, split by commas");
     for (i = 0; i < n; i++) {
         const char *p, *rel = 0;
         Rat l, r, d;
+        int deg = 0;
         for (p = part[i]; p < pend[i]; p++)
             if (*p == '=') rel = p;
         l = parse(part[i], rel ? rel : pend[i]);
@@ -3831,10 +3802,16 @@ static void do_system(const char **part, const char **pend, int n)
         }
         if (d.d) fail("systems need polynomial equations, no fractions with variables");
         eq[i] = d.n;
-        if (hasi(eq[i])) fail("systems need real coefficients");
-        for (v = 0; v < NV; v++)
-            for (int j = 0; j < eq[i]->n; j++) used[v] |= eq[i]->t[j].e[v] != 0;
-        if (total_degree(eq[i]) > 1) nonlin = i;
+        if (hasi(d.n)) fail("systems need real coefficients");
+        for (j = 0, t = d.n->t; j < d.n->n; j++, t++) {
+            int td = 0;
+            for (v = 0; v < NV; v++) {
+                used[v] |= t->e[v];
+                td += t->e[v];
+            }
+            if (td > deg) deg = td;
+        }
+        if (deg > 1) nonlin = i;
         else lin = i;
     }
     for (mcols = 0, v = 0; v < NV; v++)
@@ -3845,22 +3822,12 @@ static void do_system(const char **part, const char **pend, int n)
         return;
     }
     if (n != 2 || mcols != 2 || lin < 0) fail("taproot solves linear systems and one linear + one other equation in two variables");
-    {
-        int u = -1;
-        for (i = 0; i < eq[lin]->n; i++) {
-            const Term *t = &eq[lin]->t[i];
-            for (v = 0; v < NV; v++)
-                if (t->e[v] && u < 0) u = v;
-        }
-        if (u < 0) fail("the linear equation has no variable");
-        /* prefer solving for a variable with coefficient 1 */
-        for (i = 0; i < eq[lin]->n; i++) {
-            const Term *t = &eq[lin]->t[i];
-            for (v = 0; v < NV; v++)
-                if (t->e[v] && (t->c.n == 1 || t->c.n == -1) && t->c.d == 1) u = v;
-        }
-        substitution(eq[lin], eq[nonlin], u, mvar[0] == u ? mvar[1] : mvar[0]);
-    }
+    /* the first letter, or the last one with coefficient 1 */
+    for (i = 0, t = eq[lin]->t; i < eq[lin]->n; i++, t++)
+        for (v = 0; v < NV; v++)
+            if (t->e[v] && (u < 0 || ((t->c.n == 1 || t->c.n == -1) && t->c.d == 1))) u = v;
+    if (u < 0) fail("the linear equation has no variable");
+    substitution(eq[lin], eq[nonlin], u, mvar[0] == u ? mvar[1] : mvar[0]);
 }
 
 /* ---------- entry ---------- */
