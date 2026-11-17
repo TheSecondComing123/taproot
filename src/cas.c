@@ -243,6 +243,13 @@ static void qset(Q *r, int32_t n)
     r->d = 1;
 }
 
+/* out of line: the copy inlined is several times the size of the call */
+static void qcpy(Q *r, const Q *a)
+{
+    r->n = a->n;
+    r->d = a->d;
+}
+
 static void qnorm(Q *r, int32_t n, int32_t d)
 {
     int32_t g;
@@ -264,7 +271,8 @@ static void qadd(Q *r, const Q *a, const Q *b)
 
 static void qsub(Q *r, const Q *a, const Q *b)
 {
-    Q t = *b;
+    Q t;
+    qcpy(&t, b);
     t.n = -t.n;
     qadd(r, a, &t);
 }
@@ -285,7 +293,8 @@ static void qdiv(Q *r, const Q *a, const Q *b)
 
 static void qpow(Q *r, const Q *a, int n)
 {
-    Q t = *a;
+    Q t;
+    qcpy(&t, a);
     qset(r, 1);
     while (n--) qmul(r, r, &t);
 }
@@ -424,7 +433,8 @@ static void wvars(const uint8_t *e)
 /* the sign and coefficient of a term; hv says a letter follows, so 1 is dropped and fractions get parentheses */
 static void wcoef(const Q *c0, int first, int hv)
 {
-    Q c = *c0;
+    Q c;
+    qcpy(&c, c0);
     if (c.n < 0) {
         wputc('-');
         c.n = -c.n;
@@ -492,8 +502,9 @@ static int mcmp(const uint8_t *a, const uint8_t *b)
 static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
 {
     uint8_t e[NV];
-    Q c = *c0;
+    Q c;
     int i, r;
+    qcpy(&c, c0);
     memcpy(e, e0, NV);
     if (iv >= 0 && e[iv] > 1) {
         if (e[iv] & 2) c.n = -c.n; /* i^2 = -1 */
@@ -514,7 +525,7 @@ static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
     }
     if (p->n == MAXT) fail("too many terms (max 64)");
     memmove(&p->t[i + 1], &p->t[i], (p->n - i) * sizeof(Term));
-    p->t[i].c = c;
+    qcpy(&p->t[i].c, &c);
     memcpy(p->t[i].e, e, NV);
     p->n++;
 }
@@ -584,7 +595,7 @@ static int isconst(const Poly *p, Q *c)
         return 1;
     }
     if (p->n == 1 && !hasvars(p->t[0].e)) {
-        *c = p->t[0].c;
+        qcpy(c, &p->t[0].c);
         return 1;
     }
     return 0;
@@ -691,7 +702,7 @@ static int todense(const Poly *p, int v, Q *c)
     for (i = 0; i < p->n; i++) {
         int e = v < 0 ? 0 : p->t[i].e[v];
         if (e > MAXD) fail("degree too high (max 40)");
-        c[e] = p->t[i].c;
+        qcpy(&c[e], &p->t[i].c);
         if (e > deg) deg = e;
     }
     return deg;
@@ -731,8 +742,9 @@ static Poly *pderiv(const Poly *p, int v)
 
 static void qeval(Q *r, const Poly *p, int v, const Q *x)
 {
-    Q t, xp = *x;
+    Q t, xp;
     int i;
+    qcpy(&xp, x);
     qset(r, 0);
     for (i = 0; i < p->n; i++) {
         qpow(&t, &xp, v < 0 ? 0 : p->t[i].e[v]);
@@ -781,19 +793,28 @@ static int ddiv(Q *num, int dn, const Q *den, int dd, Q *quo)
 static void monic(Q *c, int deg)
 {
     int i;
-    Q lead = c[deg];
+    Q lead;
+    qcpy(&lead, &c[deg]);
     for (i = 0; i <= deg; i++) qdiv(&c[i], &c[i], &lead);
+}
+
+/* the k that scales c (degree deg) to integers with no common factor */
+static void content(Q *k, const Q *c, int deg)
+{
+    int32_t l = 1, g = 0;
+    int i;
+    for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
+    for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
+    qnorm(k, l, g);
 }
 
 /* scale c to integer coefficients with no common factor: remainders grow far slower than when made monic */
 static void prim(Q *c, int deg)
 {
-    int32_t l = 1, g = 0;
     Q k;
     int i;
-    for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
-    for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
-    qnorm(&k, l, g);
+    if (deg < 0) return;
+    content(&k, c, deg);
     for (i = 0; i <= deg; i++) qmul(&c[i], &c[i], &k);
 }
 
@@ -802,7 +823,7 @@ static void prim(Q *c, int deg)
    past 64 bits on a degree-12 input */
 static int dgcd(int na, int nb)
 {
-    static Q t[MAXD + 1];
+    Q *a = ga, *b = gb, *t;
     int i, outer = soft;
     if (!outer) {
         if (setjmp(soft_jmp)) {
@@ -811,25 +832,26 @@ static int dgcd(int na, int nb)
         }
         soft = 1;
     }
-    if (na >= 0) prim(ga, na);
-    if (nb >= 0) prim(gb, nb);
+    prim(a, na);
+    prim(b, nb);
     while (nb >= 0) {
         while (na >= nb) {
-            int32_t lb = gb[nb].n, la = ga[na].n;
+            int32_t lb = b[nb].n, la = a[na].n;
             int sh = na - nb;
-            for (i = 0; i <= na; i++) ga[i].n = ckmul(ga[i].n, lb);
-            for (i = 0; i <= nb; i++) ga[i + sh].n = ckadd(ga[i + sh].n, -ckmul(la, gb[i].n));
-            for (na--; na >= 0 && !ga[na].n; na--);
+            for (i = 0; i <= na; i++) a[i].n = ckmul(a[i].n, lb);
+            for (i = 0; i <= nb; i++) a[i + sh].n = ckadd(a[i + sh].n, -ckmul(la, b[i].n));
+            for (na--; na >= 0 && !a[na].n; na--);
         }
-        if (na >= 0) prim(ga, na);
-        memcpy(t, ga, sizeof t);
-        memcpy(ga, gb, sizeof t);
-        memcpy(gb, t, sizeof t);
+        prim(a, na);
+        t = a;
+        a = b;
+        b = t;
         i = na;
         na = nb;
         nb = i;
     }
-    if (na >= 0) monic(ga, na);
+    if (na >= 0) monic(a, na);
+    memmove(ga, a, sizeof ga);
     soft = outer;
     return na;
 }
@@ -847,7 +869,8 @@ static void wpar(const Poly *p)
 static void wlinear(int v, const Q *a)
 {
     uint8_t e[NV] = { 0 };
-    Q t = *a;
+    Q t;
+    qcpy(&t, a);
     t.n = -t.n;
     wputc(vars[v]);
     if (t.n) wmono(&t, e, 0);
@@ -865,27 +888,29 @@ static void wcell(const Q *a, int width, char lead)
 /* synthetic division of c (degree deg) by x-a. quotient into quo, returns remainder */
 static void synthetic(Q *rem, const Q *c, int deg, const Q *a, Q *quo)
 {
-    static Q rows[3][MAXD + 1];
-    Q *top = rows[0], *prod = rows[1], *res = rows[2];
-    int i, j, width = 0, l;
-    for (j = 0; j <= deg; j++) top[j] = c[deg - j];
-    res[0] = top[0];
-    qset(&prod[0], 0);
-    for (j = 1; j <= deg; j++) {
-        qmul(&prod[j], a, &res[j - 1]);
-        qadd(&res[j], &top[j], &prod[j]);
+    static Q prod[MAXD + 1], res[MAXD + 1];
+    const Q *row[3];
+    int i, k, width = 0, l;
+    row[0] = c;
+    row[1] = prod;
+    row[2] = res;
+    qcpy(&res[deg], &c[deg]);
+    qset(&prod[deg], 0);
+    for (k = deg - 1; k >= 0; k--) {
+        qmul(&prod[k], a, &res[k + 1]);
+        qadd(&res[k], &c[k], &prod[k]);
     }
     for (i = 0; i < 3; i++)
-        for (j = 0; j <= deg; j++)
-            if ((l = qlen(&rows[i][j])) > width) width = l;
+        for (k = 0; k <= deg; k++)
+            if ((l = qlen(&row[i][k])) > width) width = l;
     width++;
     for (i = 0; i < 3; i++) {
         begin(L_STEP);
-        for (j = 0; j <= deg; j++) wcell(i == 1 && !j ? 0 : &rows[i][j], width, i == 2 && j == deg ? '|' : ' ');
+        for (k = deg; k >= 0; k--) wcell(i == 1 && k == deg ? 0 : &row[i][k], width, i == 2 && !k ? '|' : ' ');
         end();
     }
-    for (j = 0; j < deg; j++) quo[deg - 1 - j] = res[j];
-    if (rem) *rem = res[deg];
+    memcpy(quo, res + 1, deg * sizeof(Q));
+    if (rem) qcpy(rem, &res[0]);
 }
 
 static void longdiv(Q *num, int dn, const Q *den, int dd, int v, Q *quo)
@@ -1026,17 +1051,15 @@ no:
    quotient and remainder stay relative to the divisor as typed */
 static void normalize(Rat *r)
 {
-    int32_t l = 1, g = 0;
+    static Q c[MAXT];
+    Q k;
     int i;
-    for (i = 0; i < r->d->n; i++) l = lcm(l, r->d->t[i].c.d);
-    for (i = 0; i < r->d->n; i++) g = gcd(g, ckmul(r->d->t[i].c.n, l / r->d->t[i].c.d));
-    {
-        Q k;
-        qnorm(&k, r->d->t[0].c.n < 0 ? -l : l, g);
-        if (qone(&k)) return;
-        replace(&r->n, pscale(r->n, &k));
-        replace(&r->d, pscale(r->d, &k));
-    }
+    for (i = 0; i < r->d->n; i++) qcpy(&c[i], &r->d->t[i].c);
+    content(&k, c, i - 1);
+    if (c[0].n < 0) k.n = -k.n;
+    if (qone(&k)) return;
+    replace(&r->n, pscale(r->n, &k));
+    replace(&r->d, pscale(r->d, &k));
 }
 
 /* cancel the lowest power of each variable shared by every term */
