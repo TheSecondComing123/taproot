@@ -5,7 +5,10 @@
 
 #define X0 4
 #define RH 10
-#define COLS 38
+#ifndef CW
+#define CW 8
+#endif
+#define COLS ((320 - 2 * X0) / CW - 1)
 #define PER (COLS - 1)
 #define MAXIN 110
 #define BAR 226
@@ -132,10 +135,10 @@ static int layout(int top, int vis, int draw)
         do {
             int ind = first ? 0 : 2, n = cut(s, COLS - ind);
             if (draw && row >= scroll && row < scroll + vis) {
-                int x = X0 + ind * 8, y = top + (row - scroll) * RH;
+                int x = X0 + ind * CW, y = top + (row - scroll) * RH;
                 int lab = k < 0 && first ? (int)strlen(label[shown]) : 0;
                 text(s, lab, x, y, accent[shown]);
-                text(s + lab, n - lab, x + lab * 8, y, color);
+                text(s + lab, n - lab, x + lab * CW, y, color);
             }
             s += n;
             row++;
@@ -153,22 +156,22 @@ static void draw(void)
     gfx_SetColor(C_MANTLE);
     gfx_FillRectangle(0, 0, 320, 12);
     text("taproot", 7, X0, 2, C_LAV);
-    if (msg) text(msg, 28, X0 + 9 * 8, 2, C_YELLOW);
+    if (msg) text(msg, 28, X0 + 9 * CW, 2, C_YELLOW);
     if (mode) {
         const char *tag = mode == M_2ND ? "2nd" : mode == M_ALPHA ? "a" : "A-lock";
-        int w = strlen(tag) * 8 + 6;
+        int w = strlen(tag) * CW + 6;
         gfx_SetColor(mode == M_2ND ? C_BLUE : C_GREEN);
         gfx_FillRectangle(320 - w - 3, 1, w, 10);
         text(tag, 6, 320 - w, 2, C_CRUST);
     }
 
     text(">", 1, X0, 16, C_OVER);
-    for (r = 0; r < rows; r++) text(in + r * PER, PER, X0 + 8, 16 + r * RH, C_TEXT);
+    for (r = 0; r < rows; r++) text(in + r * PER, PER, X0 + CW, 16 + r * RH, C_TEXT);
     {
-        int x = X0 + 8 + cur % PER * 8, y = 15 + cur / PER * RH;
+        int x = X0 + CW + cur % PER * CW, y = 15 + cur / PER * RH;
         char g = mode == M_2ND ? '\x05' : mode == M_ALPHA ? 'a' : mode == M_LOCK ? 'A' : in[cur];
         gfx_SetColor(mode == M_2ND ? C_BLUE : mode ? C_GREEN : C_YELLOW);
-        gfx_FillRectangle(x, y, 8, RH);
+        gfx_FillRectangle(x, y, CW, RH);
         if (g) text(&g, 1, x, y + 1, C_CRUST);
     }
     gfx_SetColor(C_SURF);
@@ -203,7 +206,7 @@ static void draw(void)
             gfx_SetColor(accent[k]);
             gfx_FillRectangle(i * 64 + 8, BAR, 48, 2);
         }
-        text(label[k], n, i * 64 + 32 - n * 4, BAR + 4, accent[k]);
+        text(label[k], n, i * 64 + 32 - n * CW / 2, BAR + 4, accent[k]);
     }
     gfx_SwapDraw();
 }
@@ -317,7 +320,7 @@ int main(void)
     gfx_SetDrawBuffer();
     for (i = 0; i < (int)(sizeof rgb / sizeof *rgb); i++) gfx_palette[i] = gfx_RGBTo1555(rgb[i][0], rgb[i][1], rgb[i][2]);
     for (i = 0; i < (int)(sizeof glyphs / sizeof *glyphs); i++) gfx_SetCharData(glyphs[i][0], glyphs[i] + 1);
-    gfx_SetMonospaceFont(8);
+    gfx_SetMonospaceFont(CW);
     gfx_SetTextTransparentColor(C_NONE);
     gfx_SetTextBGColor(C_NONE);
     cas_stop = stop;
