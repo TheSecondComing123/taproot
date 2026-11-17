@@ -6,7 +6,7 @@ NAME = TAPROOT
 DESCRIPTION = "taproot polynomial cas"
 COMPRESSED = NO
 
-CFLAGS = -Wall -Wextra -Oz -fno-inline
+CFLAGS = -Wall -Wextra -Oz -fno-inline -fno-jump-tables
 CXXFLAGS = -Wall -Wextra -Oz
 
 # ----------------------------
