@@ -407,9 +407,9 @@ static void wvars(const uint8_t *e)
     }
 }
 
-static void wmono(const Q *c0, const uint8_t *e, int first)
+/* the sign and coefficient of a term; hv says a letter follows, so 1 is dropped and fractions get parentheses */
+static void wcoef(const Q *c0, int first, int hv)
 {
-    int hv = hasvars(e);
     Q c = *c0;
     if (c.n < 0) {
         wputc('-');
@@ -422,7 +422,30 @@ static void wmono(const Q *c0, const uint8_t *e, int first)
     } else if (!qone(&c) || !hv) {
         wq(&c);
     }
+}
+
+static void wmono(const Q *c, const uint8_t *e, int first)
+{
+    wcoef(c, first, hasvars(e));
     wvars(e);
+}
+
+/* m ch + b, for the inverse steps where y is not one of the input's letters */
+static void wlin(const Q *m, int ch, const Q *b)
+{
+    static const uint8_t none[NV];
+    if (m->n) {
+        wcoef(m, 1, 1);
+        wputc(ch);
+    }
+    if (b->n || !m->n) wmono(b, none, !m->n);
+}
+
+static void wlinpar(const Q *m, int ch, const Q *b)
+{
+    if (m->n && b->n) wputc('(');
+    wlin(m, ch, b);
+    if (m->n && b->n) wputc(')');
 }
 
 /* a whole-number coefficient, for the many places that build terms from integers */
@@ -1052,13 +1075,16 @@ static int fold(Rat *r)
 static void rsimp(Rat *r)
 {
     int v, vn, k, nn, nd;
-    Poly *t;
+    Poly *t, *cut = 0;
     if (!r->d) return;
     if (r->n->n && hasi(r->d)) {
         Poly *cj = conj(r->d);
+        Poly *n = pmul(r->n, cj), *d = pmul(r->d, cj);
         say(L_STEP, "multiply top and bottom by the conjugate %p", cj);
-        replace(&r->n, pmul(r->n, cj));
-        replace(&r->d, pmul(r->d, cj));
+        say(L_STEP, "top: (%p)(%p) = %p", r->n, cj, n);
+        say(L_STEP, "bottom: (%p)(%p) = %p", r->d, cj, d);
+        replace(&r->n, n);
+        replace(&r->d, d);
         pfree(cj);
     }
     if (fold(r)) return;
@@ -1073,10 +1099,7 @@ static void rsimp(Rat *r)
         if (k > 0) {
             memcpy(gc, ga, sizeof gc);
             t = fromdense(gc, k, v);
-            say(L_STEP | OPEN, "cancel the common factor ");
-            wpar(t);
-            end();
-            pfree(t);
+            cut = t;
             nn = todense(r->n, v, ga);
             ddiv(ga, nn, gc, k, gb);
             replace(&r->n, fromdense(gb, nn - k, v));
@@ -1092,11 +1115,25 @@ static void rsimp(Rat *r)
         replace(&r->d, 0);
         return;
     }
-    if (fold(r)) return;
-    normalize(r);
+    if (!fold(r)) normalize(r);
+    if (cut) {
+        say(L_STEP | OPEN, "cancel the common factor ");
+        wpar(cut);
+        say(MORE, ": %r", *r);
+        pfree(cut);
+    }
 }
 
-static Rat radd(Rat a, Rat b, int neg)
+static void wcross(const Poly *n, const Poly *d)
+{
+    say(MORE | OPEN, "(%p)", n);
+    if (d) {
+        say(MORE | OPEN, "(%p)", d);
+    }
+}
+
+/* shown is for sums the user typed; the ones taproot makes itself show their result in their own step */
+static Rat radd(Rat a, Rat b, int neg, int shown)
 {
     Rat r;
     Poly *x, *y;
@@ -1111,8 +1148,12 @@ static Rat radd(Rat a, Rat b, int neg)
         pfree(x);
         pfree(y);
         r.d = dmul(a.d, b.d);
-        if (a.d && b.d) {
-            say(L_STEP, "common denominator %p", r.d);
+        if (shown) {
+            say(L_STEP | OPEN, "common denominator %p, top ", r.d);
+            wcross(a.n, b.d);
+            wputc(neg ? '-' : '+');
+            wcross(b.n, a.d);
+            say(MORE, " = %p", r.n);
         }
     }
     rsimp(&r);
@@ -1193,13 +1234,12 @@ static Poly *binom(const Poly *a, int n)
 static Poly *ppow(const Poly *a, int n)
 {
     Poly *r, *t;
+    int k;
     if (a->n == 2 && n >= 2) return binom(a, n);
-    if (a->n > 2 && n >= 2) {
-        say(L_STEP, "multiply out (%p)^%d", a, n);
-    }
     r = pconsti(1);
-    while (n--) {
+    for (k = 1; k <= n; k++) {
         t = pmul(r, a);
+        if (a->n > 2 && k > 1) say(L_STEP, "(%p)^%d = %p", a, k, t);
         pfree(r);
         r = t;
     }
@@ -1333,6 +1373,18 @@ static Rat punary(void)
     return r;
 }
 
+/* a product of two polynomials, one with several terms, gets its own step */
+static Rat rmul_shown(Rat a, Rat b)
+{
+    Rat r = rmul(a, b);
+    Q c;
+    if (!a.d && !b.d && !isconst(a.n, &c) && !isconst(b.n, &c) && (a.n->n > 1 || b.n->n > 1)) {
+        say(L_STEP | OPEN, a.n->n > 1 ? "(%p)" : "%p", a.n);
+        say(MORE, "(%p) = %p", b.n, r.n);
+    }
+    return r;
+}
+
 static Rat pterm(void)
 {
     Rat a = punary(), b, r;
@@ -1341,10 +1393,10 @@ static Rat pterm(void)
         if (ch == '*' || ch == '/') {
             s++;
             b = punary();
-            r = ch == '*' ? rmul(a, b) : rdiv(a, b);
+            r = ch == '*' ? rmul_shown(a, b) : rdiv(a, b);
         } else if (isalnum(ch) || ch == '(' || ch == '.') {
             b = ppower();
-            r = rmul(a, b);
+            r = rmul_shown(a, b);
         } else {
             return a;
         }
@@ -1362,7 +1414,7 @@ static Rat pexpr(void)
         if (ch != '+' && ch != '-') return a;
         s++;
         b = pterm();
-        r = radd(a, b, ch == '-');
+        r = radd(a, b, ch == '-', 1);
         rfree(a);
         rfree(b);
         a = r;
@@ -1461,7 +1513,7 @@ static Rat psubst(const Poly *p)
             rfree(pw);
             t = u;
         }
-        u = radd(acc, t, 0);
+        u = radd(acc, t, 0, 0);
         rfree(acc);
         rfree(t);
         acc = u;
@@ -1489,6 +1541,8 @@ static int ideg;
 static int32_t dv0[256], dvn[256];
 static int32_t bqa[2], bqb[2];
 static int nbq, bqmult, nquads;
+/* num, k, r, den, mult of x^2 = (num+-k sqrt r)/den when the x^2-quadratic has no rational roots; mult 0 is none */
+static int32_t nest4[5];
 static struct { int32_t a, b, c; int mult; } quads[MAXD / 2 + 1];
 static Cx z[MAXD];
 static int zm[MAXD], nz;
@@ -1869,7 +1923,8 @@ static int32_t disc(int32_t a, int32_t b, int32_t c)
     return ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
 }
 
-static void quad_steps(int32_t a, int32_t b, int32_t c, int v)
+/* pw 2 solves for v^2 */
+static void quad_steps(int32_t a, int32_t b, int32_t c, int v, int pw)
 {
     int32_t d = disc(a, b, c), r, sq;
     int neg = d < 0;
@@ -1888,7 +1943,7 @@ static void quad_steps(int32_t a, int32_t b, int32_t c, int v)
         end();
     }
     if (gcd(gcd(b, sq), 2 * a) != 1) {
-        say(L_STEP | OPEN, "%c = ", vars[v]);
+        say(L_STEP | OPEN, pw > 1 ? "%c^2 = " : "%c = ", vars[v]);
         wradical(-b, sq, r, neg, ckmul(2, a), 0);
         end();
     }
@@ -2189,7 +2244,6 @@ static void numeric(int fmult)
     }
     rten(&m, -3);
     if (!rlt(&dkerr, &m)) fail("too sensitive to solve numerically");
-    say(L_STEP, "no exact formula used for degree %d, solving numerically", n);
 }
 
 static void numeric_result(int v)
@@ -2315,19 +2369,32 @@ static void dderiv(const Q *c, int deg, Q *out)
 
 static void exact_or_numeric(int v, int mult)
 {
+    int32_t d;
     if (ideg == 1) {
         add_root(-ip[0], ip[1], mult);
     } else if (ideg == 2) {
         addquad(ip[2], ip[1], ip[0], mult);
-        quad_steps(ip[2], ip[1], ip[0], v);
+        quad_steps(ip[2], ip[1], ip[0], v, 1);
     } else if (ideg == 4 && quartic_split(v)) {
         int i;
         for (i = nquads - 2; i < nquads; i++) {
             quads[i].mult = mult;
-            quad_steps(quads[i].a, quads[i].b, quads[i].c, v);
+            quad_steps(quads[i].a, quads[i].b, quads[i].c, v, 1);
         }
-    } else if (ideg >= 1) {
+    } else if (ideg == 4 && !ip[1] && !ip[3] && (d = disc(ip[4], ip[2], ip[0])) > 0 && isqrt(d) * isqrt(d) != d) {
+        /* x^2 = (num +- k sqrt r)/den, so x is +-sqrt of each; numeric() still gives the decimals */
+        say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
+        quad_steps(ip[4], ip[2], ip[0], v, 2);
+        quad_parts(ip[4], ip[2], ip[0], &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
+        nest4[4] = mult;
+        say(L_STEP | OPEN, "%c^2 = ", vars[v]);
+        wradical(nest4[0], nest4[1], nest4[2], 0, nest4[3], 0);
+        end();
         numeric(mult);
+    } else if (ideg >= 1) {
+        int n = ideg;
+        numeric(mult);
+        say(L_STEP, "no exact formula used for degree %d, solving numerically", n);
     }
 }
 
@@ -2440,6 +2507,7 @@ static void analyze(const Poly *p, int v)
     Q k;
     uint8_t m[NV];
     nroots = nbq = nz = nquads = 0;
+    nest4[4] = 0;
     rset(&dkerr, 0);
     r = gcf(p, &k, m);
     if (m[v]) {
@@ -2902,6 +2970,16 @@ static void solve_results(int v)
     }
     for (i = 0; i < nquads; i++) quad_result(quads[i].a, quads[i].b, quads[i].c, v, quads[i].mult);
     for (i = 0; i < nbq; i++) quad_result(bqb[i], 0, -bqa[i], v, bqmult);
+    for (i = 1; nest4[4] && i >= -1; i -= 2) {
+        int32_t num = nest4[0], k = nest4[1], r = nest4[2];
+        /* the sign of num + i k sqrt r; den is positive */
+        int pos = i > 0 ? num > 0 || ckmul(num, num) < ckmul(ckmul(k, k), r) : num > 0 && ckmul(num, num) > ckmul(ckmul(k, k), r);
+        say(L_RESULT | OPEN, pos ? "%c = " G_PM G_SQRT "(" : "%c = " G_PM "i" G_SQRT "(", vars[v]);
+        wradical(pos ? num : -num, k, r, 0, nest4[3], pos ? i : -i);
+        wputc(')');
+        wmult(nest4[4]);
+        end();
+    }
     numeric_result(v);
 }
 
@@ -3144,21 +3222,34 @@ static void do_deriv(Rat r)
     }
     if (r.d) {
         Rat q;
+        Poly *top;
         dn = pderiv(r.n, v);
         dd = pderiv(r.d, v);
         begin(L_STEP);
         wputs("quotient rule: (top'" G_DOT "bottom-top" G_DOT "bottom')/bottom^2");
         end();
         say(L_STEP, "top' = %p, bottom' = %p", dn, dd);
+        say(L_STEP, "= ((%p)(%p)-(%p)(%p))/(%p)^2", dn, r.d, r.n, dd, r.d);
         {
             Poly *a = pmul(dn, r.d), *b = pmul(r.n, dd);
-            q.n = padd(a, b, 1);
+            top = padd(a, b, 1);
+            q.n = pcopy(top);
             q.d = pmul(r.d, r.d);
             pfree(a);
             pfree(b);
         }
         rsimp(&q);
-        wderiv(v, q);
+        if (r.d->n > 1 && q.d && pdeg(q.d, v) == 2 * pdeg(r.d, v)) {
+            /* nothing cancelled, so keep the bottom squared the way it's written by hand */
+            begin(L_RESULT);
+            if (vars[v] != 'x') {
+                say(MORE | OPEN, "d/d%c ", vars[v]);
+            }
+            say(MORE, top->n > 1 ? "= (%p)/(%p)^2" : "= %p/(%p)^2", top, r.d);
+        } else {
+            say(L_STEP, top->n > 1 ? "= (%p)/(%p)^2, then cancel" : "= %p/(%p)^2, then cancel", top, r.d);
+            wderiv(v, q);
+        }
         if (nassigned()) {
             check_domain();
             say(L_RESULT | OPEN, "at ");
@@ -3222,7 +3313,7 @@ static void vertex_of(const Q *a, const Q *b, const Q *c, Q *h, Q *k)
 }
 
 /* a(x-h)^2+k */
-static void wvertex(const Q *a, const Q *h, const Q *k, int v)
+static void wvertex(const Q *a, const Q *h, const Q *k, int ch)
 {
     uint8_t e[NV] = { 0 };
     Q t = *h;
@@ -3230,11 +3321,11 @@ static void wvertex(const Q *a, const Q *h, const Q *k, int v)
     if (a->n == -1 && a->d == 1) wputc('-');
     else if (!qone(a)) wqpar(a);
     if (h->n) {
-        say(MORE | OPEN, "(%c", vars[v]);
+        say(MORE | OPEN, "(%c", ch);
         wmono(&t, e, 0);
         wputc(')');
     } else {
-        wputc(vars[v]);
+        wputc(ch);
     }
     wputs("^2");
     if (k && k->n) wmono(k, e, 0);
@@ -3264,7 +3355,7 @@ static void do_vertex(Rat r)
     qmul(&t, &u, &u);
     say(MORE, "%q", &t);
     say(L_STEP | OPEN, "= ");
-    wvertex(&a, &h, 0, v);
+    wvertex(&a, &h, 0, vars[v]);
     if (c.n || u.n) {
         qmul(&t, &t, &a);
         t.n = -t.n;
@@ -3273,7 +3364,7 @@ static void do_vertex(Rat r)
     }
     end();
     say(L_RESULT | OPEN, "= ");
-    wvertex(&a, &h, &k, v);
+    wvertex(&a, &h, &k, vars[v]);
     end();
     say(L_RESULT, "vertex (%q, %q)", &h, &k);
     say(L_RESULT | OPEN, "axis %c = %q", vars[v], &h);
@@ -3392,40 +3483,48 @@ static void do_zeros(Rat r)
 
 static void do_inverse(Rat r)
 {
-    static Q a, b, c, h, k, t;
-    int v = ratvar(r), dn, dd;
+    static Q a, b, c, h, k, t, one;
+    int v = ratvar(r), dn, dd, x;
     uint8_t e[NV] = { 0 };
     Rat f;
     if (v < 0 || v == iv) fail("inverse needs a function of one variable");
+    x = vars[v];
     dn = pdeg(r.n, v);
     dd = r.d ? pdeg(r.d, v) : 0;
-    say(L_STEP, "y = %r, swap %c and y, solve for y", r, vars[v]);
+    qset(&one, 1);
+    say(L_STEP, "y = %r, swap %c and y, solve for y", r, x);
     if (dn == 2 && !dd) {
         need_quadratic(r, &a, &b, &c);
         vertex_of(&a, &b, &c, &h, &k);
-        say(L_STEP | OPEN, "vertex form: y = ");
-        wvertex(&a, &h, &k, v);
-        end();
-        say(L_RESULT | OPEN, "f^-1(%c) = ", vars[v]);
-        if (h.n) wq(&h);
-        wputs(G_PM G_SQRT "(");
+        if (b.n) {
+            say(L_STEP | OPEN, "vertex form: y = ");
+            wvertex(&a, &h, &k, x);
+            end();
+        }
+        /* (y-h)^2 = (x-k)/a */
         f.n = pvar(v);
-        e[v] = 0;
         t = k;
         t.n = -t.n;
         addterm(f.n, &t, e);
         f.d = 0;
-        qset(&t, 1);
-        qdiv(&t, &t, &a);
+        qdiv(&t, &one, &a);
         replace(&f.n, pscale(f.n, &t));
-        say(MORE, "%r)", f);
-        say(L_APPROX, "not one-to-one: + for %c" G_GE "%q, - for %c" G_LE "%q", vars[v], &h, vars[v], &h);
+        say(L_STEP | OPEN, "%c = ", x);
+        wvertex(&a, &h, &k, 'y');
+        end();
+        begin(L_STEP);
+        wvertex(&one, &h, 0, 'y');
+        say(MORE, " = %r", f);
+        say(L_RESULT | OPEN, "f^-1(%c) = ", x);
+        if (h.n) wq(&h);
+        say(MORE, G_PM G_SQRT "(%r)", f);
+        say(L_APPROX, "not one-to-one: + for %c" G_GE "%q, - for %c" G_LE "%q", x, &h, x, &h);
         return;
     }
     if (dn > 1 || dd > 1 || (dn < 1 && dd < 1)) fail("inverse works for linear, quadratic and (ax+b)/(cx+d)");
-    /* f = (a x + b)/(c x + d)  ->  f^-1 = (b - d x)/(c x - a) */
+    /* x = (A y + B)/(C y + D)  ->  y (C x - A) = B - D x */
     {
-        static Q A, B, C, D;
+        static Q A, B, C, D, nA, nD, zero;
         todense(r.n, v, da);
         A = da[1];
         B = da[0];
@@ -3440,11 +3539,71 @@ static void do_inverse(Rat r)
         qmul(&h, &B, &C);
         qsub(&t, &t, &h);
         if (!t.n) fail("this function is constant, so it has no inverse");
-        D.n = -D.n;
-        A.n = -A.n;
+        nA = A;
+        nA.n = -A.n;
+        nD = D;
+        nD.n = -D.n;
+        qset(&zero, 0);
+        say(L_STEP | OPEN, "%c = ", x);
+        if (C.n) {
+            wlinpar(&A, 'y', &B);
+            wputc('/');
+            wlinpar(&C, 'y', &D);
+            end();
+            if (D.n) {
+                say(L_STEP | OPEN, "%c(", x);
+                wlin(&C, 'y', &D);
+                wputs(") = ");
+                wlin(&A, 'y', &B);
+                end();
+            }
+            begin(L_STEP);
+            wcoef(&C, 1, 1);
+            say(MORE | OPEN, "%cy", x);
+            e[v] = 1;
+            if (D.n) wmono(&D, e, 0);
+            wputs(" = ");
+            wlin(&A, 'y', &B);
+            end();
+            begin(L_STEP);
+            wcoef(&C, 1, 1);
+            say(MORE | OPEN, "%cy", x);
+            if (A.n) {
+                wcoef(&nA, 0, 1);
+                wputc('y');
+            }
+            wputs(" = ");
+            wlin(&nD, x, &B);
+            end();
+            if (A.n) {
+                say(L_STEP | OPEN, "y(");
+                wlin(&C, x, &nA);
+                wputs(") = ");
+                wlin(&nD, x, &B);
+                end();
+            }
+        } else {
+            if (!qone(&D)) {
+                wlinpar(&A, 'y', &B);
+                say(MORE | OPEN, "/%q", &D);
+                end();
+                begin(L_STEP);
+                wlin(&D, x, &zero);
+                wputs(" = ");
+            }
+            wlin(&A, 'y', &B);
+            end();
+            begin(L_STEP);
+            wlin(&A, 'y', &zero);
+            wputs(" = ");
+            t = B;
+            t.n = -t.n;
+            wlin(&D, x, &t);
+            end();
+        }
         e[v] = 1;
         f.n = pnew();
-        addterm(f.n, &D, e);
+        addterm(f.n, &nD, e);
         e[v] = 0;
         addterm(f.n, &B, e);
         if (C.n) {
@@ -3452,12 +3611,12 @@ static void do_inverse(Rat r)
             e[v] = 1;
             addterm(f.d, &C, e);
             e[v] = 0;
-            addterm(f.d, &A, e);
+            addterm(f.d, &nA, e);
         } else {
-            f.d = pconst(&A);
+            f.d = pconst(&nA);
         }
         rsimp(&f);
-        say(L_RESULT, "f^-1(%c) = %r", vars[v], f);
+        say(L_RESULT, "f^-1(%c) = %r", x, f);
     }
 }
 
@@ -3676,7 +3835,7 @@ static void do_system(const char **part, const char **pend, int n)
         l = parse(part[i], rel ? rel : pend[i]);
         if (rel) {
             r = parse(rel + 1, pend[i]);
-            d = radd(l, r, 1);
+            d = radd(l, r, 1, 0);
             rfree(l);
             rfree(r);
         } else {
@@ -3762,6 +3921,7 @@ void cas_run(int cmd, const char *input)
     nv = nest = 0;
     iv = -1;
     nroots = nbq = nz = npts = pstrlen = nquads = 0;
+    nest4[4] = 0;
     dom = 0;
     domv = -1;
     memset(assigned, 0, sizeof assigned);
@@ -3808,7 +3968,7 @@ void cas_run(int cmd, const char *input)
         r = parse(rhs_of(part[0], at, rlen), pend[0]);
     } else if (rel) {
         Rat lhs = parse(part[0], at), rhs = parse(at + rlen, pend[0]);
-        r = radd(lhs, rhs, 1);
+        r = radd(lhs, rhs, 1, 0);
         if (rel == '=' && (rhs.n->n || rhs.d)) {
             say(L_STEP, "move everything to one side: %r=0", r);
         }

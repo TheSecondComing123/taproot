@@ -157,7 +157,9 @@ int main(int argc, char **argv)
     check(S, "x=x", "every value works");
     check(S, "x+y=1", "solve needs one variable");
     check(S, "x^4+5x^2+4=0", "x = " G_PM "i | x = " G_PM "2i");
-    check(S, "x^4-4x^2+1=0", "x " G_APPROX " -1.931852 | x " G_APPROX " -0.517638 | x " G_APPROX " 0.517638 | x " G_APPROX " 1.931852");
+    check(S, "x^4-4x^2+1=0", "x = " G_PM G_SQRT "(2+" G_SQRT "3) | x = " G_PM G_SQRT "(2-" G_SQRT "3) | x " G_APPROX " -1.931852 | x " G_APPROX " -0.517638 | x " G_APPROX " 0.517638 | x " G_APPROX " 1.931852");
+    check(S, "x^4+6x^2+7=0", "x = " G_PM "i" G_SQRT "(3-" G_SQRT "2) | x = " G_PM "i" G_SQRT "(3+" G_SQRT "2) | x " G_APPROX " 0" G_PM "1.25928i | x " G_APPROX " 0" G_PM "2.101003i");
+    check(S, "x^4-2x^2-1=0", "x = " G_PM G_SQRT "(1+" G_SQRT "2) | x = " G_PM "i" G_SQRT "(-1+" G_SQRT "2) | x " G_APPROX " -1.553774 | x " G_APPROX " 1.553774 | x " G_APPROX " 0" G_PM "0.643594i");
     check(S, "x^3-2=0", "x " G_APPROX " 1.259921 | x " G_APPROX " -0.629961" G_PM "1.091124i");
     check(S, "3x^2-5x=0", "x = 0 | x = 5/3");
     check(S, "y^2-2=0", "y = " G_PM G_SQRT "2 | y " G_APPROX " " G_PM "1.414214");
@@ -195,6 +197,7 @@ int main(int argc, char **argv)
     check(S, "0>=0", "all real numbers");
     has_step(S, "x^2-x-6>0", "(-" G_INF ",-2): +");
     has_step(S, "x^4+x^2+1=0", "x^4+x^2+1 = (x^2-x+1)(x^2+x+1)");
+    has_step(S, "x^4-6x^2+7=0", "x^2 = 3" G_PM G_SQRT "2");
 
     /* rational expressions */
     check(E, "1/(x-1)+1/(x+1)", "= 2x/(x^2-1) | x " G_NE " -1, 1");
@@ -250,7 +253,7 @@ int main(int argc, char **argv)
     check(E, "(x+1)/(x-1)+3", "= (4x-2)/(x-1) | = 4+2/(x-1) | quotient 4, remainder 2 | x " G_NE " 1");
     check(E, "(x+y)/(x-1)", "= (x+y)/(x-1) | x " G_NE " 1");
     check(E, "(x^3+1)/(x-2), x=1", "= -2");
-    check(D, "(x^3+1)/(x-2)", "= (2x^3-6x^2-1)/(x^2-4x+4)");
+    check(D, "(x^3+1)/(x-2)", "= (2x^3-6x^2-1)/(x-2)^2");
     check(E, "(x+1", "missing )");
     check(E, "x+1)", "extra )");
     check(E, "x=1=2", "only one = or inequality sign allowed");
@@ -285,6 +288,16 @@ int main(int argc, char **argv)
     check(E, deep, "expression too big for memory");
 
     has_step(E, "(2x-3)^5", "T3 C(5,2)(2x)^3(-3)^2 = 720x^3");
+    has_step(E, "(x+1)(x-2)(x+3)", "(x^2-x-2)(x+3) = x^3+2x^2-5x-6");
+    has_step(E, "(x+2)^3*(x-1)", "(x^3+6x^2+12x+8)(x-1) = x^4+5x^3+6x^2-4x-8");
+    has_step(E, "(x^2+x+1)^3", "(x^2+x+1)^2 = x^4+2x^3+3x^2+2x+1");
+    has_step(E, "(2+i)/(1-3i)", "top: (2+i)(1+3i) = -1+7i");
+    has_step(E, "(2+i)/(1-3i)", "bottom: (1-3i)(1+3i) = 10");
+    has_step(E, "1/(x+1)+2/(x-1)", "common denominator x^2-1, top (1)(x-1)+(2)(x+1) = 3x+1");
+    has_step(Z, "(x^2+3x+2)/(x^2-1)", "cancel the common factor (x+1): (x+2)/(x-1)");
+    has_step(D, "(x^2+1)/(x-3)", "= ((2x)(x-3)-(x^2+1)(1))/(x-3)^2");
+    has_step(N, "(2x+1)/(x-3)", "y(x-2) = 3x+1");
+    has_step(N, "x^2-4x+1", "(y-2)^2 = x+3");
     has_step(E, "(x+2y)^4", "T1 C(4,0)x^4 = x^4");
     has_step(E, "(x^3+2x-5)/(x-2)", "synthetic division by x-2");
     has_step(E, "(x^3+2x-5)/(x-2)", "  1  2  6| 7");
