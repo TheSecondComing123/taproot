@@ -979,7 +979,7 @@ static void replace(Poly **slot, Poly *p)
 static void track(const Poly *b)
 {
     Q c;
-    Poly *g, *part;
+    Poly *g, *part = 0;
     int v, k;
     if (isconst(b, &c) || domv == -2) return;
     v = univar(b);
@@ -993,14 +993,12 @@ static void track(const Poly *b)
         return;
     }
     k = dgcd(todense(dom, v, ga), todense(b, v, gb));
-    if (k <= 0) {
-        replace(&dom, pmul(dom, b));
-        return;
+    if (k > 0) {
+        g = fromdense(ga, k, v);
+        part = divide_out(b, g, v);
+        pfree(g);
     }
-    g = fromdense(ga, k, v);
-    part = divide_out(b, g, v);
-    pfree(g);
-    replace(&dom, pmul(dom, part));
+    replace(&dom, pmul(dom, part ? part : b));
     pfree(part);
 }
 
@@ -1103,7 +1101,6 @@ static void rsimp(Rat *r)
         replace(&r->d, d);
         pfree(cj);
     }
-    if (fold(r)) return;
     mindiv(r);
     if (fold(r)) return;
     v = univar(r->d);
