@@ -1,5 +1,6 @@
 #include <graphx.h>
 #include <ti/getcsc.h>
+#include <ctype.h>
 #include <string.h>
 #include "cas.h"
 #include "font.h"
@@ -91,11 +92,6 @@ static void glyph(const uint8_t *g, int h, uint8_t *p, uint8_t color)
     }
 }
 
-static int digit(char c)
-{
-    return c >= '0' && c <= '9';
-}
-
 /* PRETTY draws ^2 and ^-1 as small raised digits and carries the radical's bar over the number under it */
 static void text(const char *s, int n, int x, int y, uint8_t color, int style)
 {
@@ -103,17 +99,17 @@ static void text(const char *s, int n, int x, int y, uint8_t color, int style)
     uint8_t *p = &gfx_vbuffer[y][x];
     for (; n-- > 0 && *s; s++) {
         uint8_t c = *s;
-        if (style & PRETTY && c == '^' && digit(s[s[1] == '-' ? 2 : 1])) {
+        if (style & PRETTY && c == '^' && isdigit((unsigned char)s[s[1] == '-' ? 2 : 1])) {
             up = 1;
             continue;
         }
-        if (up && (digit(c) || s[-1] == '^')) {
+        if (up && (isdigit(c) || s[-1] == '^')) {
             glyph(sup[c == '-' ? 10 : c - '0'], 6, p + SUPY * 320, color);
             p += 5;
             continue;
         }
         up = 0;
-        bar = style & PRETTY && (c == G_SQRT[0] || (bar && (digit(c) || (c == '-' && s[-1] == G_SQRT[0]))));
+        bar = style & PRETTY && (c == G_SQRT[0] || (bar && (isdigit(c) || (c == '-' && s[-1] == G_SQRT[0]))));
         if (bar && c != G_SQRT[0]) memset(p, color, CW);
         if (c != ' ') glyph(font[style & BOLD][c > ' ' ? c - 0x12 : c > 8 ? c - 9 : c - 1], 14, p, color);
         p += CW;
