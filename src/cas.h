@@ -6,7 +6,7 @@
 enum { CMD_EXPAND, CMD_FACTOR, CMD_SOLVE, CMD_DERIV, CMD_VERTEX, CMD_ZEROS, CMD_SYSTEM, CMD_INVERSE };
 enum { L_STEP, L_RESULT, L_APPROX, L_ERROR };
 
-/* glyph codes, drawn with gfx_SetCharData on the calc. 9-16 are skipped: tab, newline and
+/* glyph codes in src/font.h. 9-16 are skipped: tab, newline and
    the bytes python's splitlines treats as line breaks */
 #define G_SQRT "\x01"
 #define G_PM "\x02"
