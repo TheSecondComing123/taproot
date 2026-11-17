@@ -327,6 +327,13 @@ static int qlen(const Q *a)
 
 /* ---------- os reals ---------- */
 
+/* the os calls return a 9-byte struct that every call site would otherwise copy out */
+static void xadd(R *r, const R *a, const R *b) { *r = os_RealAdd(a, b); }
+static void xsub(R *r, const R *a, const R *b) { *r = os_RealSub(a, b); }
+static void xmul(R *r, const R *a, const R *b) { *r = os_RealMul(a, b); }
+static void xdiv(R *r, const R *a, const R *b) { *r = os_RealDiv(a, b); }
+static void xsqrt(R *r, const R *a) { *r = os_RealSqrt(a); }
+
 /* v as a real: exact up to 14 digits, rounded past that */
 static void rset(R *r, long long v)
 {
@@ -357,7 +364,7 @@ static void rfrac(R *r, long long n, long long d)
     R b;
     rset(r, n);
     rset(&b, d);
-    *r = os_RealDiv(r, &b);
+    xdiv(r, r, &b);
 }
 
 static void rten(R *r, int e)
@@ -388,9 +395,9 @@ static void rtol(R *r, const R *x, int e)
     R one, t = *x;
     rabs(&t);
     rset(&one, 1);
-    t = os_RealAdd(&t, &one);
+    xadd(&t, &t, &one);
     rten(&one, e);
-    *r = os_RealMul(&t, &one);
+    xmul(r, &t, &one);
 }
 
 /* ---------- polynomials ---------- */
@@ -724,8 +731,8 @@ static void reval(R *r, const Poly *p, int v, const R *x)
     rset(r, 0);
     for (i = 0; i < p->n; i++) {
         rfrac(&t, p->t[i].c.n, p->t[i].c.d);
-        for (k = v < 0 ? 0 : p->t[i].e[v]; k > 0; k--) t = os_RealMul(&t, x);
-        *r = os_RealAdd(r, &t);
+        for (k = v < 0 ? 0 : p->t[i].e[v]; k > 0; k--) xmul(&t, &t, x);
+        xadd(r, r, &t);
     }
 }
 
@@ -1929,9 +1936,9 @@ static void quad_result(long long a, long long b, long long c, int v, int mult)
     if (r == 1) return;
     rfrac(&re, -b, 2 * a);
     rset(&im, neg ? -d : d);
-    im = os_RealSqrt(&im);
+    xsqrt(&im, &im);
     rset(&t, 2 * a);
-    im = os_RealDiv(&im, &t);
+    xdiv(&im, &im, &t);
     say(L_APPROX | OPEN, "%c", vars[v]);
     wputs(" " G_APPROX " ");
     if (neg) {
@@ -1940,9 +1947,9 @@ static void quad_result(long long a, long long b, long long c, int v, int mult)
     } else if (!b) {
         say(MORE | OPEN, G_PM "%R", &im);
     } else {
-        t = os_RealAdd(&re, &im);
+        xadd(&t, &re, &im);
         say(MORE | OPEN, "%R, ", &t);
-        t = os_RealSub(&re, &im);
+        xsub(&t, &re, &im);
         wreal(&t);
     }
     wmult(mult);
@@ -1951,26 +1958,30 @@ static void quad_result(long long a, long long b, long long c, int v, int mult)
 
 __attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
 {
-    R t1 = os_RealMul(&a->r, &b->r), t2 = os_RealMul(&a->i, &b->i), t3 = os_RealMul(&a->r, &b->i), t4 = os_RealMul(&a->i, &b->r);
-    a->r = os_RealSub(&t1, &t2);
-    a->i = os_RealAdd(&t3, &t4);
+    R t1, t2, t3, t4;
+    xmul(&t1, &a->r, &b->r);
+    xmul(&t2, &a->i, &b->i);
+    xmul(&t3, &a->r, &b->i);
+    xmul(&t4, &a->i, &b->r);
+    xsub(&a->r, &t1, &t2);
+    xadd(&a->i, &t3, &t4);
 }
 
 __attribute__((noinline)) static void cdiv(Cx *a, const Cx *b)
 {
     R m, t1, t2;
-    m = os_RealMul(&b->r, &b->r);
-    t1 = os_RealMul(&b->i, &b->i);
-    m = os_RealAdd(&m, &t1);
+    xmul(&m, &b->r, &b->r);
+    xmul(&t1, &b->i, &b->i);
+    xadd(&m, &m, &t1);
     if (rzero(&m)) rten(&m, -30);
-    t1 = os_RealMul(&a->r, &b->r);
-    t2 = os_RealMul(&a->i, &b->i);
-    t1 = os_RealAdd(&t1, &t2);
-    t2 = os_RealMul(&a->i, &b->r);
-    a->i = os_RealMul(&a->r, &b->i);
-    a->i = os_RealSub(&t2, &a->i);
-    a->i = os_RealDiv(&a->i, &m);
-    a->r = os_RealDiv(&t1, &m);
+    xmul(&t1, &a->r, &b->r);
+    xmul(&t2, &a->i, &b->i);
+    xadd(&t1, &t1, &t2);
+    xmul(&t2, &a->i, &b->r);
+    xmul(&a->i, &a->r, &b->i);
+    xsub(&a->i, &t2, &a->i);
+    xdiv(&a->i, &a->i, &m);
+    xdiv(&a->r, &t1, &m);
 }
 
 __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
@@ -1979,20 +1990,20 @@ __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
     *r = a->r;
     rabs(r);
     rabs(&t);
-    *r = os_RealAdd(r, &t);
+    xadd(r, r, &t);
 }
 
 /* a -= b, r = |b| relative to the new a */
 __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
 {
     R t, one;
-    a->r = os_RealSub(&a->r, &b->r);
-    a->i = os_RealSub(&a->i, &b->i);
+    xsub(&a->r, &a->r, &b->r);
+    xsub(&a->i, &a->i, &b->i);
     cnorm(&t, a);
     rset(&one, 1);
-    t = os_RealAdd(&t, &one);
+    xadd(&t, &t, &one);
     cnorm(r, b);
-    *r = os_RealDiv(r, &t);
+    xdiv(r, r, &t);
 }
 
 /* value of the d-th derivative of monic c (degree n) at z */
@@ -2006,9 +2017,9 @@ __attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx 
     for (j = n; j >= d; j--) {
         for (k = 1, t = 0; t < d; t++) k *= j - t;
         rset(&f, k);
-        f = os_RealMul(&f, &c[j]);
+        xmul(&f, &f, &c[j]);
         cmul(v, zz);
-        v->r = os_RealAdd(&v->r, &f);
+        xadd(&v->r, &v->r, &f);
     }
 }
 
@@ -2022,10 +2033,10 @@ __attribute__((noinline)) static void hornabs(const R *c, int n, int d, const R 
     for (j = n; j >= d; j--) {
         for (k = 1, t = 0; t < d; t++) k *= j - t;
         rset(&f, k);
-        f = os_RealMul(&f, &c[j]);
+        xmul(&f, &f, &c[j]);
         rabs(&f);
-        *v = os_RealMul(v, x);
-        *v = os_RealAdd(v, &f);
+        xmul(v, v, x);
+        xadd(v, v, &f);
     }
 }
 
@@ -2048,28 +2059,28 @@ static void numeric(int fmult)
     for (k = 1; k <= n; k++) {
         R a = c[n - k];
         rabs(&a);
-        for (rset(&r, 1), rset(&tk, 1), rset(&stp, 1), j = 0; j < k; j++) stp = os_RealMul(&stp, &two);
-        for (; rlt(&tk, &a); tk = os_RealMul(&tk, &stp)) r = os_RealMul(&r, &two);
+        for (rset(&r, 1), rset(&tk, 1), rset(&stp, 1), j = 0; j < k; j++) xmul(&stp, &stp, &two);
+        for (; rlt(&tk, &a); xmul(&tk, &tk, &stp)) xmul(&r, &r, &two);
         if (rlt(&rad, &r)) rad = r;
     }
     /* work in y = x/rad so every root sits near the unit circle and nothing overflows the os reals */
     for (rset(&r, 1), k = n - 1; k >= 0; k--) {
-        r = os_RealMul(&r, &rad);
-        c[k] = os_RealDiv(&c[k], &r);
+        xmul(&r, &r, &rad);
+        xdiv(&c[k], &c[k], &r);
     }
     rset(&w2.r, 2);
     rset(&w2.i, 0);
     rset(&u.r, 97);
-    u.r = os_RealSqrt(&u.r);
+    xsqrt(&u.r, &u.r);
     rset(&u.i, 9);
-    u.i = os_RealDiv(&u.i, &u.r);
+    xdiv(&u.i, &u.i, &u.r);
     rset(&m, 4);
-    u.r = os_RealDiv(&m, &u.r);
+    xdiv(&u.r, &m, &u.r);
     rset(&m, n);
-    m = os_RealDiv(&c[n - 1], &m);
+    xdiv(&m, &c[n - 1], &m);
     for (k = base; k < base + n; k++) {
         z[k] = w2;
-        z[k].r = os_RealSub(&z[k].r, &m);
+        xsub(&z[k].r, &z[k].r, &m);
         zm[k] = 1;
         cmul(&w2, &u);
     }
@@ -2106,20 +2117,20 @@ static void numeric(int fmult)
             t = z[j];
             csubrel(&m, &t, &z[k]);
             cnorm(&m, &t);
-            m = os_RealMul(&m, &rad);
+            xmul(&m, &m, &rad);
             cnorm(&tol, &z[k]);
-            tol = os_RealMul(&tol, &rad);
+            xmul(&tol, &tol, &rad);
             rtol(&tol, &tol, -3);
             /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
             if (!zm[j] || rlt(&tol, &m)) continue;
-            sum.r = os_RealAdd(&sum.r, &z[j].r);
-            sum.i = os_RealAdd(&sum.i, &z[j].i);
+            xadd(&sum.r, &sum.r, &z[j].r);
+            xadd(&sum.i, &sum.i, &z[j].i);
             mult++;
             zm[j] = 0;
         }
         rset(&m, mult);
-        sum.r = os_RealDiv(&sum.r, &m);
-        sum.i = os_RealDiv(&sum.i, &m);
+        xdiv(&sum.r, &sum.r, &m);
+        xdiv(&sum.i, &sum.i, &m);
         for (rset(&m, 0), it = 0; it < 8; it++) {
             horner(c, n, mult - 1, &sum, &p);
             horner(c, n, mult, &sum, &d);
@@ -2136,17 +2147,17 @@ static void numeric(int fmult)
             horner(c, n, mult, &sum, &d);
             cnorm(&tol, &d);
             rset(&eps, 1);
-            ay = os_RealAdd(&ay, &eps);
-            tol = os_RealMul(&tol, &ay);
+            xadd(&ay, &ay, &eps);
+            xmul(&tol, &tol, &ay);
             rten(&eps, -14);
-            num = os_RealMul(&num, &eps);
+            xmul(&num, &num, &eps);
             if (rzero(&tol)) rten(&tol, -99);
-            num = os_RealDiv(&num, &tol);
-            m = os_RealAdd(&m, &num);
+            xdiv(&num, &num, &tol);
+            xadd(&m, &m, &num);
         }
         if (rlt(&dkerr, &m)) dkerr = m;
-        sum.r = os_RealMul(&sum.r, &rad);
-        sum.i = os_RealMul(&sum.i, &rad);
+        xmul(&sum.r, &sum.r, &rad);
+        xmul(&sum.i, &sum.i, &rad);
         /* a merged cluster only knows its root to about eps^(1/mult), so it gets a looser real-or-not test */
         rtol(&tol, &sum.r, mult > 1 ? -4 : -7);
         t.r = sum.i;
@@ -2162,8 +2173,8 @@ static void numeric(int fmult)
         for (j = base; j < nz; j++) {
             if (j == k || zm[j] != zm[k]) continue;
             t = z[j];
-            t.i = os_RealAdd(&t.i, &z[k].i);
-            t.r = os_RealSub(&t.r, &z[k].r);
+            xadd(&t.i, &t.i, &z[k].i);
+            xsub(&t.r, &t.r, &z[k].r);
             cnorm(&m, &t);
             rtol(&tol, &z[k].r, -3);
             if (rlt(&m, &tol)) break;
@@ -2178,7 +2189,7 @@ static void numeric(int fmult)
         zm[k] = -zm[k];
         for (j = base; j < nz; j++) {
             if (j == k || !rzero(&z[j].i) || zm[j] < 2) continue;
-            m = os_RealSub(&z[j].r, &z[k].r);
+            xsub(&m, &z[j].r, &z[k].r);
             rabs(&m);
             rtol(&tol, &z[k].r, -2);
             if (rlt(&tol, &m)) continue;
@@ -2499,7 +2510,7 @@ static void addpt(const R *x, long long p, long long q, int mult, char tag, cons
     if (tag == 'h') mult = 0;
     rtol(&tol, x, -9);
     for (i = 0; i < npts; i++) {
-        d = os_RealSub(&pts[i].v, x);
+        xsub(&d, &pts[i].v, x);
         rabs(&d);
         if (rlt(&tol, &d)) continue;
         pts[i].mult += mult;
@@ -2523,12 +2534,12 @@ static void quadpts(long long a, long long b, long long c, int mult, char tag)
     int sgn;
     if (quad_parts(a, b, c, &num, &k, &r, &den)) return;
     rset(&sq, disc(a, b, c));
-    sq = os_RealSqrt(&sq);
+    xsqrt(&sq, &sq);
     for (sgn = -1; sgn <= 1; sgn += 2) {
         rset(&x, -b);
-        x = sgn < 0 ? os_RealSub(&x, &sq) : os_RealAdd(&x, &sq);
+        (sgn < 0 ? xsub : xadd)(&x, &x, &sq);
         rset(&t, 2 * a);
-        x = os_RealDiv(&x, &t);
+        xdiv(&x, &x, &t);
         pt_begin();
         wradical(num, k, r, 0, den, a > 0 ? sgn : -sgn);
         addpt(&x, 0, 0, mult, tag, pt_end());
@@ -3356,7 +3367,7 @@ static void do_zeros(Rat r)
                     reval(&yn, r.n, v, &pts[k].v);
                     rset(&yd, 1);
                     if (r.d) reval(&yd, r.d, v, &pts[k].v);
-                    yn = os_RealDiv(&yn, &yd);
+                    xdiv(&yn, &yn, &yd);
                     wputs(", y " G_APPROX " ");
                     wreal(&yn);
                 }
