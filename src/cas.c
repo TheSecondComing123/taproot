@@ -3454,17 +3454,23 @@ static void do_vertex(Rat r)
     say(MORE, "%q", &k);
 }
 
-static void wto(int v, int left, int up)
+/* r at an exact x, which may be y */
+static void qrat(Q *y, const Rat *r, int v, const Q *x)
 {
-    say(MORE | OPEN, "%c%s", vars[v], left ? G_TO "-" G_INF : G_TO G_INF);
-    wputs(up ? ": y" G_TO G_INF : ": y" G_TO "-" G_INF);
+    Q d;
+    qset(&d, 1);
+    if (r->d) qeval(&d, r->d, v, x);
+    qeval(y, r->n, v, x);
+    qdiv(y, y, &d);
 }
 
 static void do_zeros(Rat r)
 {
-    int v = ratvar(r), i, real, dn, dd;
-    static Q y0, d0, lc, x;
+    int v = ratvar(r), i, real, dn, dd, x, zero_out = 0;
+    static Q y, lc;
+    Pt *p;
     if (v < 0 || v == iv || hasi(r.n)) fail("zeros needs a function of one variable");
+    x = vars[v];
     npts = pstrlen = 0;
     dn = pdeg(r.n, v);
     dd = r.d ? pdeg(r.d, v) : 0;
@@ -3474,10 +3480,9 @@ static void do_zeros(Rat r)
         real = collect('n');
         sortpts();
     }
-    for (i = 0; i < npts; i++) {
-        say(L_RESULT | OPEN, "%c = %s", vars[v], pts[i].s);
-        wputs(pts[i].mult & 1 ? ", crosses" : ", touches");
-        wmult(pts[i].mult);
+    for (i = 0, p = pts; i < npts; i++, p++) {
+        say(L_RESULT | OPEN, "%c = %s, %s", x, p->s, p->mult & 1 ? "crosses" : "touches");
+        wmult(p->mult);
         end();
     }
     if (dn >= 1 && !npts) {
@@ -3493,74 +3498,48 @@ static void do_zeros(Rat r)
         collect('d');
         quiet--;
     }
-    i = npts;
     domain_pts(v);
     sortpts();
-    {
-        int k, zero_out = 0;
-        for (k = 0; k < npts; k++) zero_out |= rzero(&pts[k].v);
-        if (!zero_out) {
-            qset(&x, 0);
-            qeval(&y0, r.n, v, &x);
-            qset(&d0, 1);
-            if (r.d) qeval(&d0, r.d, v, &x);
-            qdiv(&y0, &y0, &d0);
-            say(L_RESULT, "y-intercept (0, %q)", &y0);
-        }
-        for (k = 0; k < npts; k++) {
-            begin(L_RESULT);
-            if (pts[k].tag == 'd') {
-                say(MORE | OPEN, "vertical asymptote %c = %s", vars[v], pts[k].s);
-            } else {
-                say(MORE | OPEN, "hole at %c = %s", vars[v], pts[k].s);
-                if (pts[k].q) {
-                    qnorm(&x, pts[k].p, pts[k].q);
-                    qeval(&y0, r.n, v, &x);
-                    qset(&d0, 1);
-                    if (r.d) qeval(&d0, r.d, v, &x);
-                    qdiv(&y0, &y0, &d0);
-                    say(MORE | OPEN, ", y = %q", &y0);
-                } else {
-                    R yn, yd;
-                    reval(&yn, r.n, v, &pts[k].v);
-                    rset(&yd, 1);
-                    if (r.d) reval(&yd, r.d, v, &pts[k].v);
-                    xdiv(&yn, &yn, &yd);
-                    wputs(", y " G_APPROX " ");
-                    wreal(&yn);
-                }
-            }
-            end();
-        }
+    for (i = 0; i < npts; i++) zero_out |= rzero(&pts[i].v);
+    if (!zero_out) {
+        qset(&y, 0);
+        qrat(&y, &r, v, &y);
+        say(L_RESULT, "y-intercept (0, %q)", &y);
     }
-    (void)i;
+    for (i = 0, p = pts; i < npts; i++, p++) {
+        say(L_RESULT | OPEN, "%s %c = %s", p->tag == 'd' ? "vertical asymptote" : "hole at", x, p->s);
+        if (p->tag == 'd') {
+        } else if (p->q) {
+            qnorm(&y, p->p, p->q);
+            qrat(&y, &r, v, &y);
+            say(MORE | OPEN, ", y = %q", &y);
+        } else {
+            R yn, yd;
+            reval(&yn, r.n, v, &p->v);
+            rset(&yd, 1);
+            if (r.d) reval(&yd, r.d, v, &p->v);
+            xdiv(&yn, &yn, &yd);
+            say(MORE | OPEN, ", y " G_APPROX " %R", &yn);
+        }
+        end();
+    }
     lc = r.n->t[0].c;
-    begin(L_RESULT);
     if (!r.d) {
-        say(MORE, "degree %d, leading coefficient %q", dn, &lc);
-        begin(L_RESULT);
-        wto(v, 1, (lc.n > 0) == !(dn & 1));
-        wputs(", ");
-        wto(v, 0, lc.n > 0);
+        int up = lc.n > 0;
+        say(L_RESULT, "degree %d, leading coefficient %q", dn, &lc);
+        say(L_RESULT, "%c" G_TO "-" G_INF ": y" G_TO "%s" G_INF ", %c" G_TO G_INF ": y" G_TO "%s" G_INF,
+            x, up == !(dn & 1) ? "" : "-", x, up ? "" : "-");
     } else if (dn < dd) {
-        wputs("horizontal asymptote y = 0");
+        say(L_RESULT, "horizontal asymptote y = 0");
     } else if (dn == dd) {
-        wputs("horizontal asymptote y = ");
         qdiv(&lc, &lc, &r.d->t[0].c);
-        wq(&lc);
+        say(L_RESULT, "horizontal asymptote y = %q", &lc);
     } else {
-        int qd;
-        Poly *q;
         todense(r.n, v, da);
         todense(r.d, v, db);
         ddiv(da, dn, db, dd, dq);
-        q = fromdense(dq, dn - dd, v);
-        qd = dn - dd;
-        wputs(qd == 1 ? "slant asymptote y = " : "end behavior like y = ");
-        wpoly(q);
-        pfree(q);
+        say(L_RESULT, "%s%p", dn - dd == 1 ? "slant asymptote y = " : "end behavior like y = ", fromdense(dq, dn - dd, v));
     }
-    end();
 }
 
 static void do_inverse(Rat r)
