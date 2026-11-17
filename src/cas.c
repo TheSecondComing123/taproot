@@ -1288,10 +1288,8 @@ static int peek(void)
 
 static int varidx(int ch)
 {
-    int i;
-    for (i = 0; i < nv; i++)
-        if (vars[i] == ch) return i;
-    return 0;
+    const char *p = memchr(vars, ch, nv);
+    return p ? p - vars : 0;
 }
 
 static Rat pexpr(void);
@@ -1383,8 +1381,7 @@ static Rat punary(void)
     r = punary();
     nest--;
     if (ch == '-') {
-        Q m;
-        qset(&m, -1);
+        static const Q m = { -1, 1 };
         replace(&r.n, pscale(r.n, &m));
     }
     return r;
@@ -1479,8 +1476,7 @@ static void parse_value(const char *start, const char *stop)
 static void addvar(int ch)
 {
     int i;
-    for (i = 0; i < nv; i++)
-        if (vars[i] == ch) return;
+    if (memchr(vars, ch, nv)) return;
     if (nv == NV) fail("too many letters (max 4)");
     for (i = nv++; i > 0 && vars[i - 1] > ch; i--) vars[i] = vars[i - 1];
     vars[i] = ch;
@@ -1614,7 +1610,8 @@ static void wip(int v)
 {
     int i;
     Poly *p;
-    for (i = 0; i <= ideg; i++) qset(&da[i], ip[i]);
+    Q *a = da;
+    for (i = 0; i <= ideg; i++) qset(a++, ip[i]);
     p = fromdense(da, ideg, v);
     wpoly(p);
     pfree(p);
