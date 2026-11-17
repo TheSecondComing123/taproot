@@ -103,7 +103,7 @@ static void text(const char *s, int n, int x, int y, uint8_t color, int style)
     uint8_t *p = &gfx_vbuffer[y][x];
     for (; n-- > 0 && *s; s++) {
         uint8_t c = *s;
-        if (style & PRETTY && c == '^' && (digit(s[1]) || (s[1] == '-' && digit(s[2])))) {
+        if (style & PRETTY && c == '^' && digit(s[s[1] == '-' ? 2 : 1])) {
             up = 1;
             continue;
         }
