@@ -183,13 +183,15 @@ static long long lcm(long long a, long long b)
     return ckmul(a / gcd(a, b), b);
 }
 
-static Q qint(long long n)
+/* fractions go by pointer: a 16-byte struct copied by value costs ~3x the code on the ez80.
+   r may be the same as a or b */
+static void qset(Q *r, long long n)
 {
-    Q q = { n, 1 };
-    return q;
+    r->n = n;
+    r->d = 1;
 }
 
-static Q qmake(long long n, long long d)
+static void qnorm(Q *r, long long n, long long d)
 {
     long long g;
     if (d == 0) fail("division by zero");
@@ -198,69 +200,76 @@ static Q qmake(long long n, long long d)
         d = -d;
     }
     g = gcd(n, d);
-    return (Q){ n / g, d / g };
+    r->n = n / g;
+    r->d = d / g;
 }
 
-static Q qadd(Q a, Q b)
+static void qadd(Q *r, const Q *a, const Q *b)
 {
-    long long g = gcd(a.d, b.d);
-    return qmake(ckadd(ckmul(a.n, b.d / g), ckmul(b.n, a.d / g)), ckmul(a.d / g, b.d));
+    long long g = gcd(a->d, b->d);
+    qnorm(r, ckadd(ckmul(a->n, b->d / g), ckmul(b->n, a->d / g)), ckmul(a->d / g, b->d));
 }
 
-static Q qmul(Q a, Q b)
+static void qsub(Q *r, const Q *a, const Q *b)
 {
-    long long g1 = gcd(a.n, b.d), g2 = gcd(b.n, a.d);
-    return qmake(ckmul(a.n / g1, b.n / g2), ckmul(a.d / g2, b.d / g1));
+    Q t = *b;
+    t.n = -t.n;
+    qadd(r, a, &t);
 }
 
-static Q qneg(Q a)
+static void qmul(Q *r, const Q *a, const Q *b)
 {
-    a.n = -a.n;
-    return a;
+    long long g1 = gcd(a->n, b->d), g2 = gcd(b->n, a->d);
+    qnorm(r, ckmul(a->n / g1, b->n / g2), ckmul(a->d / g2, b->d / g1));
 }
 
-static Q qsub(Q a, Q b)
+static void qdiv(Q *r, const Q *a, const Q *b)
 {
-    return qadd(a, qneg(b));
+    Q t;
+    if (!b->n) fail("division by zero");
+    qnorm(&t, b->d, b->n);
+    qmul(r, a, &t);
 }
 
-static Q qdiv(Q a, Q b)
+static void qpow(Q *r, const Q *a, int n)
 {
-    if (!b.n) fail("division by zero");
-    return qmul(a, qmake(b.d, b.n));
+    Q t = *a;
+    qset(r, 1);
+    while (n--) qmul(r, r, &t);
 }
 
-static Q qpow(Q a, int n)
+static int qone(const Q *a)
 {
-    Q r = qint(1);
-    while (n--) r = qmul(r, a);
-    return r;
+    return a->n == 1 && a->d == 1;
 }
 
-static int qone(Q a)
+static void wq(const Q *a)
 {
-    return a.n == 1 && a.d == 1;
-}
-
-static void wq(Q a)
-{
-    wll(a.n);
-    if (a.d != 1) {
+    wll(a->n);
+    if (a->d != 1) {
         wputc('/');
-        wll(a.d);
+        wll(a->d);
     }
 }
 
-/* a negative or fractional number in parentheses, for products like 2(-5) */
-static void wqpar(Q a)
+/* n/d reduced */
+static void wfrac(long long n, long long d)
 {
-    int p = a.n < 0 || a.d != 1;
+    Q t;
+    qnorm(&t, n, d);
+    wq(&t);
+}
+
+/* a negative or fractional number in parentheses, for products like 2(-5) */
+static void wqpar(const Q *a)
+{
+    int p = a->n < 0 || a->d != 1;
     if (p) wputc('(');
     wq(a);
     if (p) wputc(')');
 }
 
-static int qlen(Q a)
+static int qlen(const Q *a)
 {
     char buf[48], *sw = w, *se = wend;
     int n;
@@ -297,9 +306,10 @@ static void wvars(const uint8_t *e)
     }
 }
 
-static void wmono(Q c, const uint8_t *e, int first)
+static void wmono(const Q *c0, const uint8_t *e, int first)
 {
     int hv = hasvars(e);
+    Q c = *c0;
     if (c.n < 0) {
         wputc('-');
         c.n = -c.n;
@@ -308,19 +318,27 @@ static void wmono(Q c, const uint8_t *e, int first)
     }
     if (c.d != 1 && hv) {
         wputc('(');
-        wq(c);
+        wq(&c);
         wputc(')');
-    } else if (!qone(c) || !hv) {
-        wq(c);
+    } else if (!qone(&c) || !hv) {
+        wq(&c);
     }
     wvars(e);
+}
+
+/* a whole-number coefficient, for the many places that build terms from integers */
+static void wmonoi(long long n, const uint8_t *e, int first)
+{
+    Q c;
+    qset(&c, n);
+    wmono(&c, e, first);
 }
 
 static void wpoly(const Poly *p)
 {
     int i;
     if (!p->n) wputc('0');
-    for (i = 0; i < p->n; i++) wmono(p->t[i].c, p->t[i].e, !i);
+    for (i = 0; i < p->n; i++) wmono(&p->t[i].c, p->t[i].e, !i);
 }
 
 /* degree ignores i, and real terms come before their imaginary twins, so 3+2i reads that way */
@@ -339,20 +357,21 @@ static int mcmp(const uint8_t *a, const uint8_t *b)
     return 0;
 }
 
-static void addterm(Poly *p, Q c, const uint8_t *e0)
+static void addterm(Poly *p, const Q *c0, const uint8_t *e0)
 {
     uint8_t e[NV];
+    Q c = *c0;
     int i, r;
     memcpy(e, e0, NV);
     if (iv >= 0 && e[iv] > 1) {
-        if (e[iv] & 2) c = qneg(c); /* i^2 = -1 */
+        if (e[iv] & 2) c.n = -c.n; /* i^2 = -1 */
         e[iv] &= 1;
     }
     if (!c.n) return;
     for (i = 0; i < p->n; i++) {
         r = mcmp(p->t[i].e, e);
         if (r == 0) {
-            p->t[i].c = qadd(p->t[i].c, c);
+            qadd(&p->t[i].c, &p->t[i].c, &c);
             if (!p->t[i].c.n) {
                 memmove(&p->t[i], &p->t[i + 1], (p->n - i - 1) * sizeof(Term));
                 p->n--;
@@ -386,11 +405,26 @@ static void pfree(Poly *p)
     if (p) p->used = 0;
 }
 
-static Poly *pconst(Q c)
+static void addtermi(Poly *p, long long n, const uint8_t *e)
+{
+    Q c;
+    qset(&c, n);
+    addterm(p, &c, e);
+}
+
+static Poly *pconst(const Q *c)
 {
     Poly *p = pnew();
     uint8_t e[NV] = { 0 };
     addterm(p, c, e);
+    return p;
+}
+
+static Poly *pconsti(long long n)
+{
+    Poly *p = pnew();
+    uint8_t e[NV] = { 0 };
+    addtermi(p, n, e);
     return p;
 }
 
@@ -399,7 +433,7 @@ static Poly *pvar(int v)
     Poly *p = pnew();
     uint8_t e[NV] = { 0 };
     e[v] = 1;
-    addterm(p, qint(1), e);
+    addtermi(p, 1, e);
     return p;
 }
 
@@ -414,7 +448,7 @@ static Poly *pcopy(const Poly *a)
 static int isconst(const Poly *p, Q *c)
 {
     if (!p->n) {
-        *c = qint(0);
+        qset(c, 0);
         return 1;
     }
     if (p->n == 1 && !hasvars(p->t[0].e)) {
@@ -445,7 +479,11 @@ static Poly *padd(const Poly *a, const Poly *b, int neg)
 {
     Poly *r = pcopy(a);
     int i;
-    for (i = 0; i < b->n; i++) addterm(r, neg ? qneg(b->t[i].c) : b->t[i].c, b->t[i].e);
+    for (i = 0; i < b->n; i++) {
+        Q c = b->t[i].c;
+        if (neg) c.n = -c.n;
+        addterm(r, &c, b->t[i].e);
+    }
     return r;
 }
 
@@ -462,17 +500,23 @@ static Poly *pmul(const Poly *a, const Poly *b)
                 if (x > MAXE) fail("exponent too big (max 200)");
                 e[v] = x;
             }
-            addterm(r, qmul(a->t[i].c, b->t[j].c), e);
+            Q c;
+            qmul(&c, &a->t[i].c, &b->t[j].c);
+            addterm(r, &c, e);
         }
     }
     return r;
 }
 
-static Poly *pscale(const Poly *a, Q c)
+static Poly *pscale(const Poly *a, const Q *c)
 {
     Poly *r = pnew();
+    Q t;
     int i;
-    for (i = 0; i < a->n; i++) addterm(r, qmul(a->t[i].c, c), a->t[i].e);
+    for (i = 0; i < a->n; i++) {
+        qmul(&t, &a->t[i].c, c);
+        addterm(r, &t, a->t[i].e);
+    }
     return r;
 }
 
@@ -481,7 +525,7 @@ static Poly *conj(const Poly *a)
     Poly *r = pcopy(a);
     int i;
     for (i = 0; i < r->n; i++)
-        if (r->t[i].e[iv]) r->t[i].c = qneg(r->t[i].c);
+        if (r->t[i].e[iv]) r->t[i].c.n = -r->t[i].c.n;
     return r;
 }
 
@@ -511,7 +555,7 @@ static int pdeg(const Poly *p, int v)
 static int todense(const Poly *p, int v, Q *c)
 {
     int i, deg = -1;
-    for (i = 0; i <= MAXD; i++) c[i] = qint(0);
+    for (i = 0; i <= MAXD; i++) qset(&c[i], 0);
     for (i = 0; i < p->n; i++) {
         int e = v < 0 ? 0 : p->t[i].e[v];
         if (e > MAXD) fail("degree too high (max 40)");
@@ -529,7 +573,7 @@ static Poly *fromdense(const Q *c, int deg, int v)
     for (i = deg; i >= 0; i--) {
         memset(e, 0, NV);
         if (v >= 0) e[v] = i;
-        addterm(p, c[i], e);
+        addterm(p, &c[i], e);
     }
     return p;
 }
@@ -543,17 +587,26 @@ static Poly *pderiv(const Poly *p, int v)
         if (!p->t[i].e[v]) continue;
         memcpy(e, p->t[i].e, NV);
         e[v]--;
-        addterm(r, qmul(p->t[i].c, qint(p->t[i].e[v])), e);
+        {
+            Q k, c;
+            qset(&k, p->t[i].e[v]);
+            qmul(&c, &p->t[i].c, &k);
+            addterm(r, &c, e);
+        }
     }
     return r;
 }
 
-static Q qeval(const Poly *p, int v, Q x)
+static void qeval(Q *r, const Poly *p, int v, const Q *x)
 {
-    Q r = qint(0);
+    Q t, xp = *x;
     int i;
-    for (i = 0; i < p->n; i++) r = qadd(r, qmul(p->t[i].c, qpow(x, v < 0 ? 0 : p->t[i].e[v])));
-    return r;
+    qset(r, 0);
+    for (i = 0; i < p->n; i++) {
+        qpow(&t, &xp, v < 0 ? 0 : p->t[i].e[v]);
+        qmul(&t, &t, &p->t[i].c);
+        qadd(r, r, &t);
+    }
 }
 
 static long double ldeval(const Poly *p, int v, long double x)
@@ -574,13 +627,16 @@ static long double ldeval(const Poly *p, int v, long double x)
 static int ddiv(Q *num, int dn, const Q *den, int dd, Q *quo)
 {
     int i, j;
-    Q c;
-    for (i = 0; i <= MAXD; i++) quo[i] = qint(0);
+    Q c, t;
+    for (i = 0; i <= MAXD; i++) qset(&quo[i], 0);
     for (i = dn; i >= dd; i--) {
         if (!num[i].n) continue;
-        c = qdiv(num[i], den[dd]);
+        qdiv(&c, &num[i], &den[dd]);
         quo[i - dd] = c;
-        for (j = 0; j <= dd; j++) num[i - dd + j] = qsub(num[i - dd + j], qmul(c, den[j]));
+        for (j = 0; j <= dd; j++) {
+            qmul(&t, &c, &den[j]);
+            qsub(&num[i - dd + j], &num[i - dd + j], &t);
+        }
     }
     for (i = (dn < dd ? dn : dd - 1); i >= 0 && !num[i].n; i--);
     return i;
@@ -590,7 +646,7 @@ static void monic(Q *c, int deg)
 {
     int i;
     Q lead = c[deg];
-    for (i = 0; i <= deg; i++) c[i] = qdiv(c[i], lead);
+    for (i = 0; i <= deg; i++) qdiv(&c[i], &c[i], &lead);
 }
 
 /* gcd of ga (degree na) and gb (degree nb) into ga, monic. returns its degree, or -1 if the numbers overflowed */
@@ -629,14 +685,16 @@ static void wpar(const Poly *p)
 
 /* ---------- step-by-step division ---------- */
 
-static void wlinear(int v, Q a)
+static void wlinear(int v, const Q *a)
 {
     uint8_t e[NV] = { 0 };
+    Q t = *a;
+    t.n = -t.n;
     wputc(vars[v]);
-    if (a.n) wmono(qneg(a), e, 0);
+    if (t.n) wmono(&t, e, 0);
 }
 
-static void wcell(Q a, int width, char lead)
+static void wcell(const Q *a, int width, char lead)
 {
     int pad = width - qlen(a);
     wputc(lead);
@@ -645,53 +703,56 @@ static void wcell(Q a, int width, char lead)
 }
 
 /* synthetic division of c (degree deg) by x-a. quotient into quo, returns remainder */
-static Q synthetic(const Q *c, int deg, Q a, Q *quo)
+static void synthetic(Q *rem, const Q *c, int deg, const Q *a, Q *quo)
 {
     static Q res[MAXD + 1], prod[MAXD + 1];
     int j, width = 0, l;
     res[0] = c[deg];
-    prod[0] = qint(0);
+    qset(&prod[0], 0);
     for (j = 1; j <= deg; j++) {
-        prod[j] = qmul(a, res[j - 1]);
-        res[j] = qadd(c[deg - j], prod[j]);
+        qmul(&prod[j], a, &res[j - 1]);
+        qadd(&res[j], &c[deg - j], &prod[j]);
     }
     for (j = 0; j <= deg; j++) {
-        if ((l = qlen(c[deg - j])) > width) width = l;
-        if ((l = qlen(prod[j])) > width) width = l;
-        if ((l = qlen(res[j])) > width) width = l;
+        if ((l = qlen(&c[deg - j])) > width) width = l;
+        if ((l = qlen(&prod[j])) > width) width = l;
+        if ((l = qlen(&res[j])) > width) width = l;
     }
     width++;
     begin(L_STEP);
-    for (j = 0; j <= deg; j++) wcell(c[deg - j], width, ' ');
+    for (j = 0; j <= deg; j++) wcell(&c[deg - j], width, ' ');
     end();
     begin(L_STEP);
     for (j = 0; j < width; j++) wputc(' ');
-    for (j = 1; j <= deg; j++) wcell(prod[j], width, ' ');
+    for (j = 1; j <= deg; j++) wcell(&prod[j], width, ' ');
     end();
     begin(L_STEP);
-    for (j = 0; j <= deg; j++) wcell(res[j], width, j == deg ? '|' : ' ');
+    for (j = 0; j <= deg; j++) wcell(&res[j], width, j == deg ? '|' : ' ');
     end();
     for (j = 0; j < deg; j++) quo[deg - 1 - j] = res[j];
-    return res[deg];
+    if (rem) *rem = res[deg];
 }
 
 static void longdiv(Q *num, int dn, const Q *den, int dd, int v, Q *quo)
 {
     Poly *prod, *left;
-    Q coef;
+    Q coef, t;
     int i, j;
     uint8_t e[NV] = { 0 };
-    for (i = 0; i <= dn - dd; i++) quo[i] = qint(0);
+    for (i = 0; i <= dn - dd; i++) qset(&quo[i], 0);
     for (i = dn; i >= dd; i--) {
         if (!num[i].n) continue;
-        coef = qdiv(num[i], den[dd]);
+        qdiv(&coef, &num[i], &den[dd]);
         quo[i - dd] = coef;
-        for (j = 0; j <= dd; j++) num[i - dd + j] = qsub(num[i - dd + j], qmul(coef, den[j]));
+        for (j = 0; j <= dd; j++) {
+            qmul(&t, &coef, &den[j]);
+            qsub(&num[i - dd + j], &num[i - dd + j], &t);
+        }
         prod = fromdense(den, dd, v);
         left = fromdense(num, i - 1, v);
         e[v] = i - dd;
         begin(L_STEP);
-        wmono(coef, e, 1);
+        wmono(&coef, e, 1);
         wputs(G_DOT "(");
         wpoly(prod);
         wputs("), left ");
@@ -711,7 +772,7 @@ static void wrat(Rat r)
     wpoly(r.n);
     if (top) wputc(')');
     if (!r.d) return;
-    bot = !(r.d->n == 1 && qone(r.d->t[0].c) && univar(r.d) >= 0);
+    bot = !(r.d->n == 1 && qone(&r.d->t[0].c) && univar(r.d) >= 0);
     wputc('/');
     if (bot) wputc('(');
     wpoly(r.d);
@@ -797,8 +858,12 @@ static Poly *pexact(const Poly *n, const Poly *d)
         }
         if (++guard > 300) goto no;
         t = pnew();
-        addterm(t, qdiv(r->t[0].c, ld->c), e);
-        addterm(q, t->t[0].c, e);
+        {
+            Q c;
+            qdiv(&c, &r->t[0].c, &ld->c);
+            addterm(t, &c, e);
+            addterm(q, &t->t[0].c, e);
+        }
         prod = pmul(t, d);
         nr = padd(r, prod, 1);
         pfree(prod);
@@ -823,10 +888,11 @@ static void normalize(Rat *r)
     for (i = 0; i < r->d->n; i++) l = lcm(l, r->d->t[i].c.d);
     for (i = 0; i < r->d->n; i++) g = gcd(g, ckmul(r->d->t[i].c.n, l / r->d->t[i].c.d));
     {
-        Q k = qmake(r->d->t[0].c.n < 0 ? -l : l, g);
-        if (qone(k)) return;
-        replace(&r->n, pscale(r->n, k));
-        replace(&r->d, pscale(r->d, k));
+        Q k;
+        qnorm(&k, r->d->t[0].c.n < 0 ? -l : l, g);
+        if (qone(&k)) return;
+        replace(&r->n, pscale(r->n, &k));
+        replace(&r->d, pscale(r->d, &k));
     }
 }
 
@@ -855,7 +921,12 @@ static int fold(Rat *r)
     Q c;
     if (!r->d) return 1;
     if (r->n->n && !isconst(r->d, &c)) return 0;
-    if (r->n->n) replace(&r->n, pscale(r->n, qdiv(qint(1), c)));
+    if (r->n->n) {
+        Q one;
+        qset(&one, 1);
+        qdiv(&c, &one, &c);
+        replace(&r->n, pscale(r->n, &c));
+    }
     replace(&r->d, 0);
     return 1;
 }
@@ -961,7 +1032,7 @@ static Rat rdiv(Rat a, Rat b)
 
 static void binom_part(const Term *t, int k)
 {
-    int v, bare = qone(t->c), nvars = 0;
+    int v, bare = qone(&t->c), nvars = 0;
     if (!k) return;
     for (v = 0; v < NV; v++) {
         if (t->e[v] > 1) bare = 0;
@@ -969,7 +1040,7 @@ static void binom_part(const Term *t, int k)
     }
     if (nvars != 1) bare = 0;
     if (!bare) wputc('(');
-    wmono(t->c, t->e, 1);
+    wmono(&t->c, t->e, 1);
     if (!bare) wputc(')');
     if (k > 1) {
         wputc('^');
@@ -991,17 +1062,21 @@ static Poly *binom(const Poly *a, int n)
     wll(n);
     end();
     for (k = 0; k <= n; k++) {
-        Q coef;
+        Q coef, t;
         poll();
-        coef = qmul(qmul(qint(c), qpow(A->c, n - k)), qpow(B->c, k));
+        qset(&coef, c);
+        qpow(&t, &A->c, n - k);
+        qmul(&coef, &coef, &t);
+        qpow(&t, &B->c, k);
+        qmul(&coef, &coef, &t);
         for (v = 0; v < NV; v++) {
             int x = A->e[v] * (n - k) + B->e[v] * k;
             if (x > MAXE) fail("exponent too big (max 200)");
             e[v] = x;
         }
         term = pnew();
-        addterm(term, coef, e);
-        addterm(r, term->n ? term->t[0].c : qint(0), term->n ? term->t[0].e : e);
+        addterm(term, &coef, e);
+        if (term->n) addterm(r, &term->t[0].c, term->t[0].e);
         begin(L_STEP);
         wputc('T');
         wll(k + 1);
@@ -1033,7 +1108,7 @@ static Poly *ppow(const Poly *a, int n)
         wll(n);
         end();
     }
-    r = pconst(qint(1));
+    r = pconsti(1);
     while (n--) {
         t = pmul(r, a);
         pfree(r);
@@ -1048,7 +1123,7 @@ static Rat rpow(Rat a, int k)
     if (k < 0) {
         if (!a.n->n) fail("division by zero");
         track(a.n);
-        r.n = a.d ? ppow(a.d, -k) : pconst(qint(1));
+        r.n = a.d ? ppow(a.d, -k) : pconsti(1);
         r.d = ppow(a.n, -k);
     } else {
         r.n = ppow(a.n, k);
@@ -1112,7 +1187,11 @@ static Rat patom(void)
         }
         if (!digits) fail("a lone . isn't a number");
         if (s < send && *s == '.') fail("a number has two decimal points");
-        return rpoly(pconst(qmake(n, d)));
+        {
+            Q q;
+            qnorm(&q, n, d);
+            return rpoly(pconst(&q));
+        }
     }
     if (isalpha(ch)) {
         s++;
@@ -1162,7 +1241,11 @@ static Rat punary(void)
     deeper();
     r = punary();
     nest--;
-    if (ch == '-') replace(&r.n, pscale(r.n, qint(-1)));
+    if (ch == '-') {
+        Q m;
+        qset(&m, -1);
+        replace(&r.n, pscale(r.n, &m));
+    }
     return r;
 }
 
@@ -1289,7 +1372,7 @@ static Rat psubst(const Poly *p)
         for (v = 0; v < NV; v++)
             if (assigned[v]) tm.e[v] = 0;
         t = rpoly(pnew());
-        addterm(t.n, tm.c, tm.e);
+        addterm(t.n, &tm.c, tm.e);
         for (v = 0; v < NV; v++) {
             if (!assigned[v] || !p->t[i].e[v]) continue;
             pw = rpow(val[v], p->t[i].e[v]);
@@ -1346,18 +1429,20 @@ static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
         for (v = 0; v < NV; v++)
             if (p->t[i].e[v] < m[v]) m[v] = p->t[i].e[v];
     }
-    *k = qmake(p->t[0].c.n < 0 ? -g : g, l);
+    qnorm(k, p->t[0].c.n < 0 ? -g : g, l);
     r = pnew();
     for (i = 0; i < p->n; i++) {
         uint8_t e[NV];
+        Q c;
         for (v = 0; v < NV; v++) e[v] = p->t[i].e[v] - m[v];
-        addterm(r, qdiv(p->t[i].c, *k), e);
+        qdiv(&c, &p->t[i].c, k);
+        addterm(r, &c, e);
     }
     for (v = 0; v < NV; v++) show |= m[v];
-    if (r->n > 1 && (show || !qone(*k))) {
+    if (r->n > 1 && (show || !qone(k))) {
         begin(L_STEP);
         wputs("GCF ");
-        wmono(*k, m, 1);
+        wmono(k, m, 1);
         wputs(": ");
         wpoly(r);
         end();
@@ -1376,7 +1461,7 @@ static void wip(int v)
 {
     int i;
     Poly *p;
-    for (i = 0; i <= ideg; i++) da[i] = qint(ip[i]);
+    for (i = 0; i <= ideg; i++) qset(&da[i], ip[i]);
     p = fromdense(da, ideg, v);
     wpoly(p);
     pfree(p);
@@ -1386,9 +1471,9 @@ static void wlinfactor(long long p, long long q, int v)
 {
     uint8_t e[NV] = { 0 };
     e[v] = 1;
-    wmono(qint(q), e, 1);
+    wmonoi(q, e, 1);
     e[v] = 0;
-    if (p) wmono(qint(-p), e, 0);
+    if (p) wmonoi(-p, e, 0);
 }
 
 static void sortll(long long *a, int n)
@@ -1492,7 +1577,7 @@ static void wcandidates(int n0, int nn)
             if (gcd(dv0[j], dvn[i]) != 1) continue;
             if (--count < 0) break;
             wputs(G_PM);
-            wq(qmake(dv0[j], dvn[i]));
+            wfrac(dv0[j], dvn[i]);
             if (count) wputs(", ");
         }
     }
@@ -1538,9 +1623,9 @@ static void find_roots(int v)
                     begin(L_STEP);
                     wputc(vars[v]);
                     wputc('=');
-                    wq(qmake(p, q));
+                    wfrac(p, q);
                     wputs(": P(");
-                    wq(qmake(p, q));
+                    wfrac(p, q);
                     wputs(")=0, so (");
                     wlinfactor(p, q, v);
                     wputs(") is a factor");
@@ -1612,9 +1697,9 @@ static void wbq(int i, int v)
     uint8_t e[NV] = { 0 };
     e[v] = 2;
     wputc('(');
-    wmono(qint(bqb[i]), e, 1);
+    wmonoi(bqb[i], e, 1);
     e[v] = 0;
-    wmono(qint(-bqa[i]), e, 0);
+    wmonoi(-bqa[i], e, 0);
     wputc(')');
     if (bqmult > 1) wputs("^2");
 }
@@ -1636,7 +1721,7 @@ static int biquad(int v)
     wputs("^2");
     end();
     for (i = 0; i < 2; i++) {
-        u = qmake(ckadd(-b, i ? -sq : sq), ckmul(2, a));
+        qnorm(&u, ckadd(-b, i ? -sq : sq), ckmul(2, a));
         bqa[i] = u.n;
         bqb[i] = u.d;
     }
@@ -2048,8 +2133,12 @@ static void toip(const Q *c, int deg)
 static void dderiv(const Q *c, int deg, Q *out)
 {
     int i;
-    for (i = 0; i <= MAXD; i++) out[i] = qint(0);
-    for (i = 1; i <= deg; i++) out[i - 1] = qmul(c[i], qint(i));
+    Q k;
+    for (i = 0; i <= MAXD; i++) qset(&out[i], 0);
+    for (i = 1; i <= deg; i++) {
+        qset(&k, i);
+        qmul(&out[i - 1], &c[i], &k);
+    }
 }
 
 static void exact_or_numeric(int v, int mult)
@@ -2081,7 +2170,7 @@ static int sqfree(void)
     static Q yt[MAXD + 1];
     Q *yp = da, *yd = db, *yc = dq;
     int n = ideg, nc, nd, k, i, nf = 0, at = 0;
-    for (i = 0; i <= MAXD; i++) yp[i] = qint(i <= n ? ip[i] : 0);
+    for (i = 0; i <= MAXD; i++) qset(&yp[i], i <= n ? ip[i] : 0);
     if (setjmp(soft_jmp)) {
         soft = 0;
         return 0;
@@ -2100,7 +2189,7 @@ static int sqfree(void)
         memcpy(yt, yd, sizeof yt);
         ddiv(yt, n - 1, gc, k, yd);
         dderiv(yc, nc, yt);
-        for (i = 0; i <= MAXD; i++) yd[i] = qsub(yd[i], yt[i]);
+        for (i = 0; i <= MAXD; i++) qsub(&yd[i], &yd[i], &yt[i]);
         for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
         for (i = 1; nc > 0; i++) {
             int na;
@@ -2117,7 +2206,10 @@ static int sqfree(void)
                 ddiv(yt, nd, gc, na, yd);
             }
             dderiv(yc, nc, yt);
-            for (k = 0; k <= MAXD; k++) yd[k] = qsub(nd >= 0 ? yd[k] : qint(0), yt[k]);
+            for (k = 0; k <= MAXD; k++) {
+                if (nd < 0) qset(&yd[k], 0);
+                qsub(&yd[k], &yd[k], &yt[k]);
+            }
             for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
             if (na > 0) {
                 memcpy(fac + at, gc, (na + 1) * sizeof(Q));
@@ -2139,8 +2231,8 @@ static int rational_quadratic(int mult)
     if (ideg != 2 || (d = disc(ip[2], ip[1], ip[0])) < 0) return 0;
     sq = isqrt(d);
     if (sq * sq != d) return 0;
-    a = qmake(ckadd(-ip[1], sq), ckmul(2, ip[2]));
-    b = qmake(ckadd(-ip[1], -sq), ckmul(2, ip[2]));
+    qnorm(&a, ckadd(-ip[1], sq), ckmul(2, ip[2]));
+    qnorm(&b, ckadd(-ip[1], -sq), ckmul(2, ip[2]));
     add_root(a.n, a.d, mult);
     add_root(b.n, b.d, mult);
     step("the discriminant is a perfect square, so the roots are rational");
@@ -2203,7 +2295,7 @@ static void analyze(const Poly *p, int v)
         wputs("=0 gives ");
         wputc(vars[v]);
         wputc('=');
-        wq(qmake(-ip[0], ip[1]));
+        wfrac(-ip[0], ip[1]);
         end();
         ideg = 0;
     }
@@ -2281,9 +2373,10 @@ static int collect(char tag)
 {
     int i, total = 0;
     for (i = 0; i < nroots; i++) {
-        Q x = qmake(roots[i].p, roots[i].q);
+        Q x;
+        qnorm(&x, roots[i].p, roots[i].q);
         pt_begin();
-        wq(x);
+        wq(&x);
         addpt((long double)x.n / x.d, x.n, x.d, roots[i].mult, tag, pt_end());
         total += roots[i].mult;
     }
@@ -2369,13 +2462,14 @@ static void mixed(Rat r, int v)
     int dn = todense(r.n, v, da), dd = todense(r.d, v, db), rd;
     Poly *q, *rem;
     if (dn < dd) return;
-    if (dd == 1 && qone(db[1])) {
-        Q root = qneg(db[0]);
+    if (dd == 1 && qone(&db[1])) {
+        Q root = db[0];
+        root.n = -root.n;
         begin(L_STEP);
         wputs("synthetic division by ");
-        wlinear(v, root);
+        wlinear(v, &root);
         end();
-        da[0] = synthetic(da, dn, root, dq);
+        synthetic(&da[0], da, dn, &root, dq);
         rd = da[0].n ? 0 : -1;
     } else {
         begin(L_STEP);
@@ -2391,7 +2485,7 @@ static void mixed(Rat r, int v)
     wputs("= ");
     wpoly(q);
     if (rem->n == 1 && rem->t[0].c.d == 1) {
-        wmono(rem->t[0].c, rem->t[0].e, 0);
+        wmono(&rem->t[0].c, rem->t[0].e, 0);
     } else {
         wputs("+(");
         wpoly(rem);
@@ -2432,22 +2526,17 @@ static Rat compose(Rat r)
 
 static void check_domain(void)
 {
-    Q x;
-    if (!dom || domv < 0 || !assigned[domv] || !isnum(val[domv], &x) || qeval(dom, domv, x).n) return;
+    Q x, y;
+    if (!dom || domv < 0 || !assigned[domv] || !isnum(val[domv], &x)) return;
+    qeval(&y, dom, domv, &x);
+    if (y.n) return;
     begin(L_ERROR);
     wputs("undefined: ");
     wputc(vars[domv]);
     wputc('=');
-    wq(x);
+    wq(&x);
     wputs(" makes a denominator 0");
     die();
-}
-
-static Q qval(int v)
-{
-    Q q;
-    isnum(val[v], &q);
-    return q;
 }
 
 static void do_expand(Rat r)
@@ -2463,15 +2552,16 @@ static void do_expand(Rat r)
         end();
         if (!r.d && v >= 0 && v != iv && assigned[v] && nassigned() == 1 && pdeg(r.n, v) >= 1 && pdeg(r.n, v) <= MAXD) {
             int deg = todense(r.n, v, da);
-            Q x = qval(v);
+            Q x;
+            isnum(val[v], &x);
             begin(L_STEP);
             wputs("remainder theorem: P(");
-            wq(x);
+            wq(&x);
             wputs(") is the remainder of P/(");
-            wlinear(v, x);
+            wlinear(v, &x);
             wputc(')');
             end();
-            synthetic(da, deg, x, dq);
+            synthetic(0, da, deg, &x, dq);
         } else {
             begin(L_STEP);
             wputs("plug in ");
@@ -2534,7 +2624,7 @@ static void factor_into(const Poly *p, char *buf, int cap)
         }
     }
     pieces = nroots + nbq + nquads + nlf + (ideg >= 1) + (v == -2);
-    hasmono = hasvars(m) || !qone(k);
+    hasmono = hasvars(m) || !qone(&k);
     paren = pieces > 1 || hasmono;
     for (i = 0; i < nroots; i++) paren |= roots[i].mult > 1;
     sw = w;
@@ -2543,12 +2633,12 @@ static void factor_into(const Poly *p, char *buf, int cap)
     wend = buf + cap;
     *w = 0;
     if (!pieces || hasvars(m) || (k.d == 1 && k.n != 1 && k.n != -1)) {
-        wmono(k, m, 1);
+        wmono(&k, m, 1);
     } else if (k.n == -1 && k.d == 1) {
         wputc('-');
     } else if (k.d != 1) {
         wputc('(');
-        wq(k);
+        wq(&k);
         wputc(')');
     }
     for (i = 0; i < nroots; i++) {
@@ -2565,11 +2655,11 @@ static void factor_into(const Poly *p, char *buf, int cap)
         uint8_t e[NV] = { 0 };
         wputc('(');
         e[v] = 2;
-        wmono(qint(quads[i].a), e, 1);
+        wmonoi(quads[i].a, e, 1);
         e[v] = 1;
-        if (quads[i].b) wmono(qint(quads[i].b), e, 0);
+        if (quads[i].b) wmonoi(quads[i].b, e, 0);
         e[v] = 0;
-        if (quads[i].c) wmono(qint(quads[i].c), e, 0);
+        if (quads[i].c) wmonoi(quads[i].c, e, 0);
         wputc(')');
         if (quads[i].mult > 1) {
             wputc('^');
@@ -2683,7 +2773,7 @@ static void solve_results(int v)
         begin(L_RESULT);
         wputc(vars[v]);
         wputs(" = ");
-        wq(qmake(roots[i].p, roots[i].q));
+        wfrac(roots[i].p, roots[i].q);
         wmult(roots[i].mult);
         end();
     }
@@ -2996,23 +3086,25 @@ static void do_deriv(Rat r)
     for (i = 0; i < r.n->n; i++) {
         const Term *t = &r.n->t[i];
         int k = t->e[v];
-        Q c = qmul(t->c, qint(k));
+        Q c;
+        qset(&c, k);
+        qmul(&c, &c, &t->c);
         memcpy(e, t->e, NV);
         if (k) e[v] = k - 1;
         begin(L_STEP);
         wputs("d/d");
         wputc(vars[v]);
         wputc(' ');
-        wmono(t->c, t->e, 1);
+        wmono(&t->c, t->e, 1);
         wputs(" = ");
-        if (k > 1 && !qone(t->c)) {
+        if (k > 1 && !qone(&t->c)) {
             wll(k);
             wputs(G_DOT);
-            wqpar(t->c);
+            wqpar(&t->c);
             wvars(e);
             wputs(" = ");
         }
-        if (k) wmono(c, e, 1);
+        if (k) wmono(&c, e, 1);
         else wputc('0');
         end();
     }
@@ -3039,87 +3131,107 @@ static int need_quadratic(Rat r, Q *a, Q *b, Q *c)
     return v;
 }
 
+/* h = -b/(2a) and k = c - a h^2 for ax^2+bx+c */
+static void vertex_of(const Q *a, const Q *b, const Q *c, Q *h, Q *k)
+{
+    Q t;
+    qset(&t, 2);
+    qmul(&t, &t, a);
+    qdiv(h, b, &t);
+    h->n = -h->n;
+    qmul(&t, h, h);
+    qmul(&t, &t, a);
+    qsub(k, c, &t);
+}
+
 /* a(x-h)^2+k */
-static void wvertex(Q a, Q h, Q k, int v)
+static void wvertex(const Q *a, const Q *h, const Q *k, int v)
 {
     uint8_t e[NV] = { 0 };
-    if (a.n == -1 && a.d == 1) wputc('-');
+    Q t = *h;
+    t.n = -t.n;
+    if (a->n == -1 && a->d == 1) wputc('-');
     else if (!qone(a)) wqpar(a);
-    if (h.n) {
+    if (h->n) {
         wputc('(');
         wputc(vars[v]);
-        wmono(qneg(h), e, 0);
+        wmono(&t, e, 0);
         wputc(')');
     } else {
         wputc(vars[v]);
     }
     wputs("^2");
-    if (k.n) wmono(k, e, 0);
+    if (k && k->n) wmono(k, e, 0);
 }
 
 static void do_vertex(Rat r)
 {
-    Q a, b, c, h, k, half;
+    static Q a, b, c, h, k, t, u;
     uint8_t e[NV] = { 0 };
     int v = need_quadratic(r, &a, &b, &c);
     if (v < 0) fail("vertex form needs a quadratic like 2x^2+8x+3");
-    h = qdiv(qneg(b), qmul(qint(2), a));
-    k = qsub(c, qdiv(qmul(b, b), qmul(qint(4), a)));
-    half = qdiv(b, qmul(qint(2), a));
-    if (!qone(a)) {
+    vertex_of(&a, &b, &c, &h, &k);
+    qdiv(&t, &b, &a);
+    if (!qone(&a)) {
         begin(L_STEP);
         wputs("factor ");
-        wq(a);
+        wq(&a);
         wputs(" out of the ");
         wputc(vars[v]);
         wputs(" terms: ");
-        wqpar(a);
+        wqpar(&a);
         wputc('(');
         wputc(vars[v]);
         wputs("^2");
         e[v] = 1;
-        wmono(qdiv(b, a), e, 0);
+        wmono(&t, e, 0);
         e[v] = 0;
         wputc(')');
-        if (c.n) wmono(c, e, 0);
+        if (c.n) wmono(&c, e, 0);
         end();
     }
+    /* half of b/a is -h */
+    u = h;
+    u.n = -u.n;
     begin(L_STEP);
     wputs("half of ");
-    wq(qdiv(b, a));
+    wq(&t);
     wputs(" is ");
-    wq(half);
+    wq(&u);
     wputs(", add and subtract ");
-    wqpar(half);
+    wqpar(&u);
     wputs("^2 = ");
-    wq(qmul(half, half));
+    qmul(&t, &u, &u);
+    wq(&t);
     end();
     begin(L_STEP);
     wputs("= ");
-    wvertex(a, h, qint(0), v);
-    if (c.n || half.n) {
-        wmono(qneg(qmul(a, qmul(half, half))), e, 0);
-        if (c.n) wmono(c, e, 0);
+    wvertex(&a, &h, 0, v);
+    if (c.n || u.n) {
+        qmul(&t, &t, &a);
+        t.n = -t.n;
+        wmono(&t, e, 0);
+        if (c.n) wmono(&c, e, 0);
     }
     end();
     begin(L_RESULT);
     wputs("= ");
-    wvertex(a, h, k, v);
+    wvertex(&a, &h, &k, v);
     end();
     begin(L_RESULT);
     wputs("vertex (");
-    wq(h);
+    wq(&h);
     wputs(", ");
-    wq(k);
+    wq(&k);
     wputc(')');
     end();
     begin(L_RESULT);
     wputs("axis ");
     wputc(vars[v]);
     wputs(" = ");
-    wq(h);
+    wq(&h);
     wputs(a.n > 0 ? ", opens up, min " : ", opens down, max ");
-    wq(k);
+    wq(&k);
     end();
 }
 
@@ -3133,7 +3245,7 @@ static void wto(int v, int left, int up)
 static void do_zeros(Rat r)
 {
     int v = ratvar(r), i, real, dn, dd;
-    Q y0, d0, lc;
+    static Q y0, d0, lc, x;
     if (v < 0 || v == iv || hasi(r.n)) fail("zeros needs a function of one variable");
     npts = pstrlen = 0;
     dn = pdeg(r.n, v);
@@ -3179,11 +3291,14 @@ static void do_zeros(Rat r)
         int k, zero_out = 0;
         for (k = 0; k < npts; k++) zero_out |= fabsl(pts[k].v) < 1e-12L;
         if (!zero_out) {
-            y0 = qeval(r.n, v, qint(0));
-            d0 = r.d ? qeval(r.d, v, qint(0)) : qint(1);
+            qset(&x, 0);
+            qeval(&y0, r.n, v, &x);
+            qset(&d0, 1);
+            if (r.d) qeval(&d0, r.d, v, &x);
+            qdiv(&y0, &y0, &d0);
             begin(L_RESULT);
             wputs("y-intercept (0, ");
-            wq(qdiv(y0, d0));
+            wq(&y0);
             wputc(')');
             end();
         }
@@ -3200,9 +3315,13 @@ static void do_zeros(Rat r)
                 wputs(" = ");
                 wputs(pts[k].s);
                 if (pts[k].q) {
-                    Q x = qmake(pts[k].p, pts[k].q);
+                    qnorm(&x, pts[k].p, pts[k].q);
+                    qeval(&y0, r.n, v, &x);
+                    qset(&d0, 1);
+                    if (r.d) qeval(&d0, r.d, v, &x);
+                    qdiv(&y0, &y0, &d0);
                     wputs(", y = ");
-                    wq(qdiv(qeval(r.n, v, x), r.d ? qeval(r.d, v, x) : qint(1)));
+                    wq(&y0);
                 } else {
                     wputs(", y " G_APPROX " ");
                     wld(ldeval(r.n, v, pts[k].v) / (r.d ? ldeval(r.d, v, pts[k].v) : 1));
@@ -3218,7 +3337,7 @@ static void do_zeros(Rat r)
         wputs("degree ");
         wll(dn);
         wputs(", leading coefficient ");
-        wq(lc);
+        wq(&lc);
         end();
         begin(L_RESULT);
         wto(v, 1, (lc.n > 0) == !(dn & 1));
@@ -3228,7 +3347,8 @@ static void do_zeros(Rat r)
         wputs("horizontal asymptote y = 0");
     } else if (dn == dd) {
         wputs("horizontal asymptote y = ");
-        wq(qdiv(lc, r.d->t[0].c));
+        qdiv(&lc, &lc, &r.d->t[0].c);
+        wq(&lc);
     } else {
         int qd;
         Poly *q;
@@ -3246,7 +3366,7 @@ static void do_zeros(Rat r)
 
 static void do_inverse(Rat r)
 {
-    Q a, b, c;
+    static Q a, b, c, h, k, t;
     int v = ratvar(r), dn, dd;
     uint8_t e[NV] = { 0 };
     Rat f;
@@ -3261,25 +3381,27 @@ static void do_inverse(Rat r)
     wputs(" and y, solve for y");
     end();
     if (dn == 2 && !dd) {
-        Q h, k;
         need_quadratic(r, &a, &b, &c);
-        h = qdiv(qneg(b), qmul(qint(2), a));
-        k = qsub(c, qdiv(qmul(b, b), qmul(qint(4), a)));
+        vertex_of(&a, &b, &c, &h, &k);
         begin(L_STEP);
         wputs("vertex form: y = ");
-        wvertex(a, h, k, v);
+        wvertex(&a, &h, &k, v);
         end();
         begin(L_RESULT);
         wputs("f^-1(");
         wputc(vars[v]);
         wputs(") = ");
-        if (h.n) wq(h);
+        if (h.n) wq(&h);
         wputs(G_PM G_SQRT "(");
         f.n = pvar(v);
         e[v] = 0;
-        addterm(f.n, qneg(k), e);
+        t = k;
+        t.n = -t.n;
+        addterm(f.n, &t, e);
         f.d = 0;
-        replace(&f.n, pscale(f.n, qdiv(qint(1), a)));
+        qset(&t, 1);
+        qdiv(&t, &t, &a);
+        replace(&f.n, pscale(f.n, &t));
         wrat(f);
         wputc(')');
         end();
@@ -3287,43 +3409,47 @@ static void do_inverse(Rat r)
         wputs("not one-to-one: + for ");
         wputc(vars[v]);
         wputs(G_GE);
-        wq(h);
+        wq(&h);
         wputs(", - for ");
         wputc(vars[v]);
         wputs(G_LE);
-        wq(h);
+        wq(&h);
         end();
         return;
     }
     if (dn > 1 || dd > 1 || (dn < 1 && dd < 1)) fail("inverse works for linear, quadratic and (ax+b)/(cx+d)");
     /* f = (a x + b)/(c x + d)  ->  f^-1 = (b - d x)/(c x - a) */
     {
-        Q A, B, C, D;
+        static Q A, B, C, D;
         todense(r.n, v, da);
-        A = dn >= 1 ? da[1] : qint(0);
+        A = da[1];
         B = da[0];
+        qset(&C, 0);
+        qset(&D, 1);
         if (r.d) {
             todense(r.d, v, db);
-            C = dd >= 1 ? db[1] : qint(0);
+            C = db[1];
             D = db[0];
-        } else {
-            C = qint(0);
-            D = qint(1);
         }
-        if (!qsub(qmul(A, D), qmul(B, C)).n) fail("this function is constant, so it has no inverse");
+        qmul(&t, &A, &D);
+        qmul(&h, &B, &C);
+        qsub(&t, &t, &h);
+        if (!t.n) fail("this function is constant, so it has no inverse");
+        D.n = -D.n;
+        A.n = -A.n;
         e[v] = 1;
         f.n = pnew();
-        addterm(f.n, qneg(D), e);
+        addterm(f.n, &D, e);
         e[v] = 0;
-        addterm(f.n, B, e);
+        addterm(f.n, &B, e);
         if (C.n) {
             f.d = pnew();
             e[v] = 1;
-            addterm(f.d, C, e);
+            addterm(f.d, &C, e);
             e[v] = 0;
-            addterm(f.d, qneg(A), e);
+            addterm(f.d, &A, e);
         } else {
-            f.d = pconst(qneg(A));
+            f.d = pconst(&A);
         }
         rsimp(&f);
         begin(L_RESULT);
@@ -3348,18 +3474,22 @@ static void wrow(int r)
         if (!mx[r][j].n) continue;
         memset(e, 0, NV);
         e[mvar[j]] = 1;
-        wmono(mx[r][j], e, first);
+        wmono(&mx[r][j], e, first);
         first = 0;
     }
     if (first) wputc('0');
     wputc('=');
-    wq(mx[r][mcols]);
+    wq(&mx[r][mcols]);
 }
 
-static void rowop(int r, int p, Q f)
+static void rowop(int r, int p, const Q *f)
 {
+    Q t;
     int j;
-    for (j = 0; j <= mcols; j++) mx[r][j] = qsub(mx[r][j], qmul(f, mx[p][j]));
+    for (j = 0; j <= mcols; j++) {
+        qmul(&t, f, &mx[p][j]);
+        qsub(&mx[r][j], &mx[r][j], &t);
+    }
 }
 
 static void linear_system(Poly **eq, int n)
@@ -3368,14 +3498,15 @@ static void linear_system(Poly **eq, int n)
     uint8_t e[NV];
     mrows = n;
     for (i = 0; i < n; i++)
-        for (j = 0; j <= mcols; j++) mx[i][j] = qint(0);
+        for (j = 0; j <= mcols; j++) qset(&mx[i][j], 0);
     for (i = 0; i < n; i++)
         for (j = 0; j < eq[i]->n; j++) {
             const Term *t = &eq[i]->t[j];
             int k, c = mcols;
             for (k = 0; k < mcols; k++)
                 if (t->e[mvar[k]]) c = k;
-            mx[i][c] = c == mcols ? qneg(t->c) : t->c;
+            mx[i][c] = t->c;
+            if (c == mcols) mx[i][c].n = -mx[i][c].n;
         }
     step("as rows:");
     for (i = 0; i < n; i++) {
@@ -3403,24 +3534,26 @@ static void linear_system(Poly **eq, int n)
             wll(p + 1);
             end();
         }
-        if (!qone(mx[row][col])) {
-            Q f = mx[row][col];
-            for (j = 0; j <= mcols; j++) mx[row][j] = qdiv(mx[row][j], f);
+        if (!qone(&mx[row][col])) {
+            static Q f;
+            f = mx[row][col];
+            for (j = 0; j <= mcols; j++) qdiv(&mx[row][j], &mx[row][j], &f);
             begin(L_STEP);
             wputc('R');
             wll(row + 1);
             wputs(" = R");
             wll(row + 1);
             wputc('/');
-            wqpar(f);
+            wqpar(&f);
             wputs(": ");
             wrow(row);
             end();
         }
         for (i = 0; i < n; i++) {
-            Q f = mx[i][col];
+            static Q f;
+            f = mx[i][col];
             if (i == row || !f.n) continue;
-            rowop(i, row, f);
+            rowop(i, row, &f);
             begin(L_STEP);
             wputc('R');
             wll(i + 1);
@@ -3428,7 +3561,8 @@ static void linear_system(Poly **eq, int n)
             wll(i + 1);
             if (f.n < 0) wputc('+');
             else wputc('-');
-            if (!(f.d == 1 && (f.n == 1 || f.n == -1))) wqpar(f.n < 0 ? qneg(f) : f);
+            if (f.n < 0) f.n = -f.n;
+            if (!qone(&f)) wqpar(&f);
             wputc('R');
             wll(row + 1);
             wputs(": ");
@@ -3443,7 +3577,7 @@ static void linear_system(Poly **eq, int n)
         wputc('R');
         wll(i + 1);
         wputs(" says 0=");
-        wq(mx[i][mcols]);
+        wq(&mx[i][mcols]);
         end();
         begin(L_RESULT);
         wputs("no solution");
@@ -3457,14 +3591,16 @@ static void linear_system(Poly **eq, int n)
         {
             int first = 1;
             if (mx[i][mcols].n) {
-                wq(mx[i][mcols]);
+                wq(&mx[i][mcols]);
                 first = 0;
             }
             for (j = piv[i] + 1; j < mcols; j++) {
-                if (!mx[i][j].n) continue;
+                Q t = mx[i][j];
+                if (!t.n) continue;
+                t.n = -t.n;
                 memset(e, 0, NV);
                 e[mvar[j]] = 1;
-                wmono(qneg(mx[i][j]), e, first);
+                wmono(&t, e, first);
                 first = 0;
             }
             if (first) wputc('0');
@@ -3494,8 +3630,9 @@ static int total_degree(const Poly *p)
     return d;
 }
 
-static void wpair(int u, Q qu, long double lu, int v, Q qv, long double lv, int exact)
+static void wpair(int u, const Q *qu, long double lu, int v, const Q *qv, long double lv)
 {
+    int exact = qu != 0;
     begin(exact ? L_RESULT : L_APPROX);
     wputc('(');
     wputc(vars[u < v ? u : v]);
@@ -3515,15 +3652,20 @@ static void wpair(int u, Q qu, long double lu, int v, Q qv, long double lv, int 
 static void substitution(Poly *lin, Poly *other, int u, int v)
 {
     Rat expr, sub;
-    Q cu = qint(0);
+    static Q cu, t, x;
     int i;
     uint8_t e[NV] = { 0 };
+    qset(&cu, 0);
     for (i = 0; i < lin->n; i++)
         if (lin->t[i].e[u]) cu = lin->t[i].c;
     /* u = -(lin - cu·u)/cu */
     expr.n = pnew();
-    for (i = 0; i < lin->n; i++)
-        if (!lin->t[i].e[u]) addterm(expr.n, qneg(qdiv(lin->t[i].c, cu)), lin->t[i].e);
+    for (i = 0; i < lin->n; i++) {
+        if (lin->t[i].e[u]) continue;
+        qdiv(&t, &lin->t[i].c, &cu);
+        t.n = -t.n;
+        addterm(expr.n, &t, lin->t[i].e);
+    }
     expr.d = 0;
     begin(L_STEP);
     wputs("from the linear one: ");
@@ -3549,8 +3691,9 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
     }
     analyze(sub.n, v);
     for (i = 0; i < nroots; i++) {
-        Q x = qmake(roots[i].p, roots[i].q);
-        wpair(u, qeval(expr.n, v, x), 0, v, x, 0, 1);
+        qnorm(&x, roots[i].p, roots[i].q);
+        qeval(&t, expr.n, v, &x);
+        wpair(u, &t, 0, v, &x, 0);
     }
     i = nroots;
     npts = pstrlen = 0;
@@ -3563,7 +3706,7 @@ static void substitution(Poly *lin, Poly *other, int u, int v)
     }
     for (i = 0; i < npts; i++) {
         if (pts[i].q) continue;
-        wpair(u, qint(0), ldeval(expr.n, v, pts[i].v), v, qint(0), pts[i].v, 0);
+        wpair(u, 0, ldeval(expr.n, v, pts[i].v), v, 0, pts[i].v);
     }
     (void)e;
 }
