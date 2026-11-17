@@ -2443,12 +2443,37 @@ static void exact_or_numeric(int v, int mult)
 static Q fac[2 * MAXD + 2];
 static int fdeg[MAXD], fmul[MAXD];
 
+static Q yt[MAXD + 1];
+
+/* dgcd's inputs */
+static void gload(const Q *a, const Q *b)
+{
+    memcpy(ga, a, sizeof ga);
+    memcpy(gb, b, sizeof gb);
+}
+
+/* q = n / gc, n of degree dn and gc of degree k */
+static void ydiv(const Q *n, int dn, int k, Q *q)
+{
+    memcpy(yt, n, sizeof yt);
+    ddiv(yt, dn, gc, k, q);
+}
+
+/* d -= c', c of degree nc; returns d's degree, -1 if it's 0 */
+static int ysubd(Q *d, const Q *c, int nc)
+{
+    int i;
+    dderiv(c, nc, yt);
+    for (i = 0; i <= MAXD; i++) qsub(&d[i], &d[i], &yt[i]);
+    for (i = MAXD; i >= 0 && !d[i].n; i--);
+    return i;
+}
+
 /* yun's algorithm on ip: square-free parts fac (monic, packed) where part i repeats fmul[i] times.
    returns how many parts, 0 if ip is square-free or the numbers overflow */
 static int sqfree(void)
 {
     /* da/db/dq are free while this runs; sharing them keeps bss under the calc's 60 kb */
-    static Q yt[MAXD + 1];
     Q *yp = da, *yd = db, *yc = dq;
     int n = ideg, nc, nd, k, i, nf = 0, at = 0;
     for (i = 0; i <= MAXD; i++) qset(&yp[i], i <= n ? ip[i] : 0);
@@ -2458,40 +2483,25 @@ static int sqfree(void)
     }
     soft = 1;
     dderiv(yp, n, yd);
-    memcpy(ga, yp, sizeof ga);
-    memcpy(gb, yd, sizeof gb);
+    gload(yp, yd);
     k = dgcd(n, n - 1);
     if (k > 0) {
         /* c = P/g, d = P'/g - c' */
         memcpy(gc, ga, sizeof gc);
-        memcpy(yt, yp, sizeof yt);
-        ddiv(yt, n, gc, k, yc);
+        ydiv(yp, n, k, yc);
         nc = n - k;
-        memcpy(yt, yd, sizeof yt);
-        ddiv(yt, n - 1, gc, k, yd);
-        dderiv(yc, nc, yt);
-        for (i = 0; i <= MAXD; i++) qsub(&yd[i], &yd[i], &yt[i]);
-        for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
+        ydiv(yd, n - 1, k, yd);
+        nd = ysubd(yd, yc, nc);
         for (i = 1; nc > 0; i++) {
             int na;
-            memcpy(ga, yc, sizeof ga);
-            memcpy(gb, yd, sizeof gb);
+            gload(yc, yd);
             na = nd >= 0 ? dgcd(nc, nd) : (monic(ga, nc), nc);
             if (na < 0) longjmp(soft_jmp, 1);
             memcpy(gc, ga, sizeof gc);
-            memcpy(yt, yc, sizeof yt);
-            ddiv(yt, nc, gc, na, yc);
+            ydiv(yc, nc, na, yc);
             nc -= na;
-            if (nd >= 0) {
-                memcpy(yt, yd, sizeof yt);
-                ddiv(yt, nd, gc, na, yd);
-            }
-            dderiv(yc, nc, yt);
-            for (k = 0; k <= MAXD; k++) {
-                if (nd < 0) qset(&yd[k], 0);
-                qsub(&yd[k], &yd[k], &yt[k]);
-            }
-            for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
+            if (nd >= 0) ydiv(yd, nd, na, yd);
+            nd = ysubd(yd, yc, nc);
             if (na > 0) {
                 memcpy(fac + at, gc, (na + 1) * sizeof(Q));
                 fdeg[nf] = na;
