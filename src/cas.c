@@ -3508,20 +3508,20 @@ static void do_zeros(Rat r)
     }
     for (i = 0, p = pts; i < npts; i++, p++) {
         say(L_RESULT | OPEN, "%s %c = %s", p->tag == 'd' ? "vertical asymptote" : "hole at", x, p->s);
-        if (p->tag == 'd') {
-        } else if (p->q) {
+        if (p->tag != 'd' && p->q) {
             qnorm(&y, p->p, p->q);
             qrat(&y, &r, v, &y);
-            say(MORE | OPEN, ", y = %q", &y);
-        } else {
+            say(MORE, ", y = %q", &y);
+        } else if (p->tag != 'd') {
             R yn, yd;
             reval(&yn, r.n, v, &p->v);
             rset(&yd, 1);
             if (r.d) reval(&yd, r.d, v, &p->v);
             xdiv(&yn, &yn, &yd);
-            say(MORE | OPEN, ", y " G_APPROX " %R", &yn);
+            say(MORE, ", y " G_APPROX " %R", &yn);
+        } else {
+            end();
         }
-        end();
     }
     lc = r.n->t[0].c;
     if (!r.d) {
