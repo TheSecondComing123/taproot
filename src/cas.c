@@ -2468,7 +2468,8 @@ static int sqfree(void)
 {
     /* da/db/dq are free while this runs; sharing them keeps bss under the calc's 60 kb */
     Q *yp = da, *yd = db, *yc = dq;
-    int n = ideg, nc, nd, k, i, nf = 0, at = 0;
+    int n = ideg, nc, nd, k, i, nf = 0;
+    Q *f = fac;
     for (i = 0; i <= MAXD; i++) qset(&yp[i], i <= n ? ip[i] : 0);
     if (setjmp(soft_jmp)) {
         soft = 0;
@@ -2496,10 +2497,10 @@ static int sqfree(void)
             if (nd >= 0) ydiv(yd, nd, na, yd);
             nd = ysubd(yd, yc, nc);
             if (na > 0) {
-                memcpy(fac + at, gc, (na + 1) * sizeof(Q));
+                memcpy(f, gc, (na + 1) * sizeof(Q));
                 fdeg[nf] = na;
                 fmul[nf++] = i;
-                at += na + 1;
+                f += na + 1;
             }
         }
     }
