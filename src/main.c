@@ -31,7 +31,6 @@ static const char *const label[] = { "expand", "factor", "solve", "d/dx", "verte
 static const uint8_t accent[] = { C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_YELLOW, C_SKY, C_PINK, C_MAROON, C_TEAL };
 #define KEYS 8
 
-static const char *const example[] = { "(2x-3)^5", "x^3-8", "x^2-5x+6=0" };
 
 /* the key is everything before the first double space */
 static const char *help[] = {
@@ -175,16 +174,19 @@ static int layout(int top, int vis)
     return row;
 }
 
+/* the start screen, a row each: rows 2-4 are examples for the first three keys */
 static void hint(int y)
 {
+    static const char *const tip[] = {
+        "type a problem, then press a key below", "", "(2x-3)^5", "x^3-8", "x^2-5x+6=0", "",
+        "2nd: vertex, zeros, system, inverse", "graph: what every key does",
+    };
     int i;
-    text("type a problem, then press a key below", 99, X0, y, C_DIM, 0);
-    for (i = 0; i < 3; i++) {
-        text(example[i], 99, X0, y + (i + 2) * RH, C_TEXT, 0);
-        text(label[i], 99, X0 + 14 * CW, y + (i + 2) * RH, accent[i], BOLD);
+    for (i = 0; i < 8; i++, y += RH) {
+        int ex = (unsigned)(i - 2) < 3;
+        text(tip[i], 99, X0, y, ex ? C_TEXT : C_DIM, 0);
+        if (ex) text(label[i - 2], 99, X0 + 14 * CW, y, accent[i - 2], BOLD);
     }
-    text("2nd: vertex, zeros, system, inverse", 99, X0, y + 6 * RH, C_DIM, 0);
-    text("graph: what every key does", 99, X0, y + 7 * RH, C_DIM, 0);
 }
 
 static void draw(void)
@@ -284,7 +286,7 @@ static void run(int cmd)
         return;
     }
     if (strcmp(in, hist[0])) {
-        for (i = 3; i > 0; i--) strcpy(hist[i], hist[i - 1]);
+        memmove(hist[1], hist[0], 3 * sizeof *hist);
         strcpy(hist[0], in);
         if (nhist < 4) nhist++;
     }
@@ -328,7 +330,7 @@ static void relation(void)
 {
     static const char cycle[] = { '=', '<', '>', G_LE[0], G_GE[0], '=', 0 };
     const char *p;
-    if (cur && (p = strchr(cycle, in[cur - 1])) && *p) {
+    if (cur && (p = strchr(cycle, in[cur - 1]))) {
         in[cur - 1] = p[1];
         return;
     }
