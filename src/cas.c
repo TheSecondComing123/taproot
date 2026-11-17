@@ -2341,7 +2341,7 @@ static int quartic_split(int v)
                 } else {
                     /* the two linear conditions coincide: q1 = (a3 - p1 q2)/p2 into the x^2 one gives
                        p1 q2^2 - a3 q2 + p2 (a2 - p1 r2 - r1 p2) = 0 */
-                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckcross(a3, a3, 4, ckmul(p1, ckmul(p2, k2))), sq2;
+                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = disc(p1, a3, ckmul(p2, k2)), sq2;
                     if (dd2 < 0) continue;
                     sq2 = isqrt(dd2);
                     if (sq2 * sq2 != dd2 || (a3 + sq2) % (2 * p1)) continue;
