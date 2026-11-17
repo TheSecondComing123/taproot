@@ -194,6 +194,7 @@ int main(int argc, char **argv)
     check(S, "0>0", "no solution");
     check(S, "0>=0", "all real numbers");
     has_step(S, "x^2-x-6>0", "(-" G_INF ",-2): +");
+    has_step(S, "x^4+x^2+1=0", "x^4+x^2+1 = (x^2-x+1)(x^2+x+1)");
 
     /* rational expressions */
     check(E, "1/(x-1)+1/(x+1)", "= 2x/(x^2-1) | x " G_NE " -1, 1");

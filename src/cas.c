@@ -2227,6 +2227,19 @@ static void addquad(int32_t a, int32_t b, int32_t c, int mult)
     quads[nquads++].mult = mult;
 }
 
+static void wquad(int32_t a, int32_t b, int32_t c, int v)
+{
+    uint8_t e[NV] = { 0 };
+    wputc('(');
+    e[v] = 2;
+    wmonoi(a, e, 1);
+    e[v] = 1;
+    if (b) wmonoi(b, e, 0);
+    e[v] = 0;
+    if (c) wmonoi(c, e, 0);
+    wputc(')');
+}
+
 /* an integer quartic ip with no rational roots as (p1x^2+q1x+r1)(p2x^2+q2x+r2), if it splits over the integers */
 static int quartic_split(int v)
 {
@@ -2266,7 +2279,10 @@ static int quartic_split(int v)
                 addquad(p2, q2, r2, 1);
                 begin(L_STEP);
                 wip(v);
-                say(MORE, " splits into two quadratics");
+                wputs(" = ");
+                wquad(p1, q1, r1, v);
+                wquad(p2, q2, r2, v);
+                end();
                 ideg = 0;
                 ip[0] = 1;
                 return 1;
@@ -2775,15 +2791,7 @@ static void factor_into(const Poly *p, char *buf, int cap)
     }
     for (i = 0; i < nbq; i++) wbq(i, v);
     for (i = 0; i < nquads; i++) {
-        uint8_t e[NV] = { 0 };
-        wputc('(');
-        e[v] = 2;
-        wmonoi(quads[i].a, e, 1);
-        e[v] = 1;
-        if (quads[i].b) wmonoi(quads[i].b, e, 0);
-        e[v] = 0;
-        if (quads[i].c) wmonoi(quads[i].c, e, 0);
-        wputc(')');
+        wquad(quads[i].a, quads[i].b, quads[i].c, v);
         if (quads[i].mult > 1) {
             say(MORE | OPEN, "^%d", quads[i].mult);
         }
