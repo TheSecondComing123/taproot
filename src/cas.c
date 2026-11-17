@@ -2393,17 +2393,17 @@ static void dderiv(const Q *c, int deg, Q *out)
 /* ax^4+bx^2+c whose x^2-quadratic has irrational roots: x^2 = (num +- k sqrt r)/den, and x is +-sqrt of each */
 static int nested(int v, int mult)
 {
-    int32_t d, sq;
-    if (ideg != 4 || ip[1] || ip[3] || (d = disc(ip[4], ip[2], ip[0])) <= 0) return 0;
+    int32_t a = ip[4], b = ip[2], c = ip[0], d, sq;
+    if (ideg != 4 || ip[1] || ip[3] || (d = disc(a, b, c)) <= 0) return 0;
     sq = isqrt(d);
     if (sq * sq == d) return 0;
     say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
-    quad_steps(ip[4], ip[2], ip[0], v, 2);
-    quad_parts(ip[4], ip[2], ip[0], &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
+    quad_steps(a, b, c, v, 2);
+    quad_parts(a, b, c, &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
     nest4[4] = mult;
     /* the two x^2 multiply to c/a and add to -b/a, and a > 0 */
-    nest4[5] = ip[0] < 0 || ip[2] < 0;
-    nest4[6] = ip[0] > 0 && ip[2] < 0;
+    nest4[5] = c < 0 || b < 0;
+    nest4[6] = c > 0 && b < 0;
     say(L_STEP | OPEN, "%c^2 = ", vars[v]);
     wradical(nest4[0], nest4[1], nest4[2], 0, nest4[3], 0);
     end();
@@ -2418,8 +2418,9 @@ static void exact_or_numeric(int v, int mult)
     if (ideg == 1) {
         add_root(-ip[0], ip[1], mult);
     } else if (ideg == 2) {
-        addquad(ip[2], ip[1], ip[0], mult);
-        quad_steps(ip[2], ip[1], ip[0], v, 1);
+        int32_t a = ip[2], b = ip[1], c = ip[0];
+        addquad(a, b, c, mult);
+        quad_steps(a, b, c, v, 1);
     } else if (ideg == 4 && quartic_split(v)) {
         int i;
         for (i = nquads - 2; i < nquads; i++) {
