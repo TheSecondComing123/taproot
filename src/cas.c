@@ -7,7 +7,7 @@
 
 #define NV 4
 #define MAXT 64
-#define POOL 24
+#define POOL 20
 #define MAXD 40
 #define MAXE 200
 #define MAXPOW 60
@@ -1332,7 +1332,7 @@ static int zm[MAXD], nz;
 static long double dkerr;
 static Pt pts[MAXPTS];
 static int npts, pstrlen;
-static char pstr[2048];
+static char pstr[1024];
 
 static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
 {
@@ -2077,7 +2077,9 @@ static int fdeg[MAXD], fmul[MAXD];
    returns how many parts, 0 if ip is square-free or the numbers overflow */
 static int sqfree(void)
 {
-    static Q yp[MAXD + 1], yd[MAXD + 1], yc[MAXD + 1], yt[MAXD + 1];
+    /* da/db/dq are free while this runs; sharing them keeps bss under the calc's 60 kb */
+    static Q yt[MAXD + 1];
+    Q *yp = da, *yd = db, *yc = dq;
     int n = ideg, nc, nd, k, i, nf = 0, at = 0;
     for (i = 0; i <= MAXD; i++) yp[i] = qint(i <= n ? ip[i] : 0);
     if (setjmp(soft_jmp)) {

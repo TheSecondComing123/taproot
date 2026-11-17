@@ -278,8 +278,9 @@ int main(int argc, char **argv)
         memmove(deep + 3, deep, strlen(deep) + 1);
         memcpy(deep, "1+(", 3);
         strcat(deep, ")");
+        if (i == 14) check(E, deep, "= x+15");
     }
-    check(E, deep, "= x+20");
+    check(E, deep, "expression too big for memory");
 
     has_step(E, "(2x-3)^5", "T3 C(5,2)(2x)^3(-3)^2 = 720x^3");
     has_step(E, "(x+2y)^4", "T1 C(4,0)x^4 = x^4");
