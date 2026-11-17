@@ -4,7 +4,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 S = 3
-GLYPH = {1: "√", 2: "±", 3: "≈", 4: "·", 5: "↑", 6: "↓", 7: "θ", 8: "²"}
+GLYPH = {1: "√", 2: "±", 3: "≈", 4: "·", 5: "↑", 6: "↓", 7: "θ", 8: "²", 17: "≠", 18: "≤", 19: "≥", 20: "∞", 21: "∪", 22: "→"}
 font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 26)
 
 

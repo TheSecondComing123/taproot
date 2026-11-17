@@ -4,9 +4,9 @@
 
 NAME = TAPROOT
 DESCRIPTION = "taproot polynomial cas"
-COMPRESSED = YES
+COMPRESSED = NO
 
-CFLAGS = -Wall -Wextra -Oz
+CFLAGS = -Wall -Wextra -Oz -fno-inline
 CXXFLAGS = -Wall -Wextra -Oz
 
 # ----------------------------

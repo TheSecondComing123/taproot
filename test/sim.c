@@ -72,7 +72,7 @@ static void dump(FILE *f)
             ys[j] = ys[j - 1];
             ys[j - 1] = t;
         }
-    static const char *glyph[] = { "?", "√", "±", "≈", "·", "↑", "↓", "θ", "²" };
+    static const char *glyph[] = { "?", "√", "±", "≈", "·", "↑", "↓", "θ", "²", "?", "?", "?", "?", "?", "?", "?", "?", "≠", "≤", "≥", "∞", "∪", "→" };
     for (j = 0; j < ny; j++) {
         int row[40], last = -1;
         for (i = 0; i < 40; i++) row[i] = ' ';
@@ -84,7 +84,7 @@ static void dump(FILE *f)
         }
         fprintf(f, "%3d|", ys[j]);
         for (i = 0; i <= last; i++) {
-            if (row[i] > 0 && row[i] < 9) fputs(glyph[row[i]], f);
+            if (row[i] > 0 && row[i] < 23) fputs(glyph[row[i]], f);
             else fputc(row[i], f);
         }
         fputc('\n', f);
@@ -98,7 +98,7 @@ static void snap(void)
     int i;
     snprintf(path, sizeof path, "%s/frame%02d.ops", outdir, frame);
     f = fopen(path, "w");
-    for (i = 0; i < 16; i++) fprintf(f, "P %d %d\n", i, sim_palette[i]);
+    for (i = 0; i < 32; i++) fprintf(f, "P %d %d\n", i, sim_palette[i]);
     for (i = 0; i < nshown; i++)
         fprintf(f, "%c %d %d %d %d %d\n", shown[i].kind, shown[i].x, shown[i].y, shown[i].w, shown[i].h, shown[i].c);
     fclose(f);
@@ -153,6 +153,11 @@ static void type(const char *s)
         case ')': sym = "rp"; break;
         case ',': sym = "comma"; break;
         case '=': sym = "sto"; break;
+        case '<': push("2nd"); push("math"); push("2nd"); sym = "math"; break;
+        case '>': push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); sym = "math"; break;
+        case '{': push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); sym = "math"; break;
+        case '}': push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); push("math"); push("2nd"); sym = "math"; break;
+        case 'i': push("2nd"); sym = "dot"; break;
         case 'x': sym = "xt"; break;
         }
         if (*s >= '0' && *s <= '9') sym = one;

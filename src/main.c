@@ -10,43 +10,58 @@
 #define MAXIN 110
 #define BAR 226
 
-enum { C_BASE, C_MANTLE, C_CRUST, C_SURF, C_OVER, C_TEXT, C_SUB, C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_TEAL, C_RED, C_YELLOW, C_LAV, C_NONE = 255 };
+enum { C_BASE, C_MANTLE, C_CRUST, C_SURF, C_OVER, C_TEXT, C_SUB, C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_TEAL, C_RED, C_YELLOW, C_LAV, C_PINK, C_SKY, C_MAROON, C_NONE = 255 };
 enum { M_NONE, M_2ND, M_ALPHA, M_LOCK };
 
 static const uint8_t rgb[][3] = {
     { 0x1e, 0x1e, 0x2e }, { 0x18, 0x18, 0x25 }, { 0x11, 0x11, 0x1b }, { 0x31, 0x32, 0x44 }, { 0x6c, 0x70, 0x86 },
     { 0xcd, 0xd6, 0xf4 }, { 0xa6, 0xad, 0xc8 }, { 0x89, 0xb4, 0xfa }, { 0xfa, 0xb3, 0x87 }, { 0xa6, 0xe3, 0xa1 },
     { 0xcb, 0xa6, 0xf7 }, { 0x94, 0xe2, 0xd5 }, { 0xf3, 0x8b, 0xa8 }, { 0xf9, 0xe2, 0xaf }, { 0xb4, 0xbe, 0xfe },
+    { 0xf5, 0xc2, 0xe7 }, { 0x89, 0xdc, 0xeb }, { 0xeb, 0xa0, 0xac },
 };
 
-static const uint8_t glyphs[][8] = {
-    { 0x07, 0x04, 0x04, 0x08, 0x48, 0x28, 0x10, 0x00 },
-    { 0x10, 0x10, 0x7c, 0x10, 0x10, 0x00, 0x7c, 0x00 },
-    { 0x00, 0x32, 0x4c, 0x00, 0x32, 0x4c, 0x00, 0x00 },
-    { 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00 },
-    { 0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x00, 0x00 },
-    { 0x10, 0x10, 0x10, 0x54, 0x38, 0x10, 0x00, 0x00 },
-    { 0x38, 0x44, 0x44, 0x7c, 0x44, 0x44, 0x38, 0x00 },
-    { 0x30, 0x48, 0x10, 0x20, 0x78, 0x00, 0x00, 0x00 },
+/* char code, then 8 rows of 8 pixels. 1-4 and 0x11-0x16 come from cas.h, 5-8 are only used here */
+static const uint8_t glyphs[][9] = {
+    { 0x01, 0x07, 0x04, 0x04, 0x08, 0x48, 0x28, 0x10, 0x00 },
+    { 0x02, 0x10, 0x10, 0x7c, 0x10, 0x10, 0x00, 0x7c, 0x00 },
+    { 0x03, 0x00, 0x32, 0x4c, 0x00, 0x32, 0x4c, 0x00, 0x00 },
+    { 0x04, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00 },
+    { 0x05, 0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x00, 0x00 },
+    { 0x06, 0x10, 0x10, 0x10, 0x54, 0x38, 0x10, 0x00, 0x00 },
+    { 0x07, 0x38, 0x44, 0x44, 0x7c, 0x44, 0x44, 0x38, 0x00 },
+    { 0x08, 0x30, 0x48, 0x10, 0x20, 0x78, 0x00, 0x00, 0x00 },
+    { 0x11, 0x04, 0x08, 0x7c, 0x10, 0x7c, 0x20, 0x40, 0x00 },
+    { 0x12, 0x0c, 0x30, 0x40, 0x30, 0x0c, 0x00, 0x7c, 0x00 },
+    { 0x13, 0x60, 0x18, 0x04, 0x18, 0x60, 0x00, 0x7c, 0x00 },
+    { 0x14, 0x00, 0x00, 0x6c, 0x92, 0x92, 0x6c, 0x00, 0x00 },
+    { 0x15, 0x00, 0x44, 0x44, 0x44, 0x44, 0x38, 0x00, 0x00 },
+    { 0x16, 0x00, 0x08, 0x04, 0x7e, 0x04, 0x08, 0x00, 0x00 },
 };
 
-static const char *const label[] = { "expand", "factor", "solve", "d/dx", "keys" };
-static const uint8_t accent[] = { C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_TEAL };
-#define KEYS 4
+/* the four keys under the screen, then the same keys after 2nd, then graph's key help */
+static const char *const label[] = { "expand", "factor", "solve", "d/dx", "vertex", "zeros", "system", "inverse", "keys" };
+static const uint8_t accent[] = { C_BLUE, C_PEACH, C_GREEN, C_MAUVE, C_YELLOW, C_SKY, C_PINK, C_MAROON, C_TEAL };
+#define KEYS 8
 
 static const char *help[] = {
     "y=        expand (2x-3)^5",
     "window    factor x^3-1",
-    "zoom      solve  x^2+2x+5=0",
+    "zoom      solve  x^2-x-6<0",
     "trace     d/dx   3x^4-5x, x=1",
+    "2nd y=    vertex 2x^2+8x+3",
+    "2nd wind  zeros  (x^2-1)/(x-2)",
+    "2nd zoom  system x+y=3, x-y=1",
+    "2nd trace inverse (2x+1)/(x-3)",
     "on an empty line they use the answer",
     "2nd enter earlier inputs",
+    "2nd math  = again for < > \x12 \x13",
+    "2nd .     i, so (2+i)/(1-i) works",
+    ",         x=3 plugs in, x=2x-1 composes",
     "X,T,\x07,n   types x",
     "alpha     next key types a letter",
     "2nd alpha letters until alpha",
     "x\x08        types ^2",
     "sto       types =",
-    ",         values: x^2+1, x=3",
     "enter     solve if =, else last",
     "del       backspace",
     "clear     line, output, or a run",
@@ -70,7 +85,8 @@ static const char alpha[] = {
 };
 
 static char in[MAXIN + 1], ans[MAXIN + 1], hist[4][MAXIN + 1];
-static int cur, mode, last, shown = -1, scroll, nhist, hpos;
+static int cur, mode, last, shown = -1, scroll, nhist, hpos, ans_long;
+static uint8_t pending;
 static char head[MAXIN + 16];
 static const char **lines;
 static const uint8_t *kinds;
@@ -178,16 +194,16 @@ static void draw(void)
     gfx_SetColor(C_CRUST);
     gfx_FillRectangle(0, BAR, 320, 240 - BAR);
     for (i = 0; i < 5; i++) {
-        int n = strlen(label[i]);
+        int k = i == 4 ? KEYS : mode == M_2ND ? i + 4 : i, n = strlen(label[k]);
         if (i) {
             gfx_SetColor(C_SURF);
             gfx_VertLine(i * 64, BAR + 3, 9);
         }
-        if (i == shown) {
-            gfx_SetColor(accent[i]);
+        if (k == shown) {
+            gfx_SetColor(accent[k]);
             gfx_FillRectangle(i * 64 + 8, BAR, 48, 2);
         }
-        text(label[i], n, i * 64 + 32 - n * 4, BAR + 4, accent[i]);
+        text(label[k], n, i * 64 + 32 - n * 4, BAR + 4, accent[k]);
     }
     gfx_SwapDraw();
 }
@@ -201,7 +217,12 @@ static void show(int cmd)
     strcat(head, cmd == KEYS ? "" : in);
 }
 
-/* an = before the first top-level comma; the ones after it are values like x=3 */
+static int isrel(char c)
+{
+    return c == '=' || c == '<' || c == '>' || c == G_LE[0] || c == G_GE[0];
+}
+
+/* = or an inequality before the first top-level comma; the ones after it are values like x=3 */
 static int equation(void)
 {
     int i, depth = 0;
@@ -209,14 +230,18 @@ static int equation(void)
         if (in[i] == '(') depth++;
         else if (in[i] == ')') depth--;
         else if (in[i] == ',' && depth <= 0) return 0;
-        else if (in[i] == '=') return 1;
+        else if (isrel(in[i])) return 1;
     }
     return 0;
 }
 
+/* polled while math runs: clear stops it, any other key waits for the main loop */
 static int stop(void)
 {
-    return os_GetCSC() == sk_Clear;
+    uint8_t k = os_GetCSC();
+    if (k == sk_Clear) return 1;
+    if (k) pending = k;
+    return 0;
 }
 
 static void run(int cmd)
@@ -227,7 +252,7 @@ static void run(int cmd)
         cur = strlen(in);
     }
     if (!*in) {
-        msg = "type something first";
+        msg = ans_long ? "answer too long to reuse" : "type something first";
         return;
     }
     if (strcmp(in, hist[0])) {
@@ -246,10 +271,14 @@ static void run(int cmd)
     nout = cas_nlines;
     show(cmd);
     *ans = 0;
-    for (i = 0; i < nout && cmd != CMD_SOLVE; i++) {
+    ans_long = 0;
+    for (i = 0; i < nout && cmd != CMD_SOLVE && cmd != CMD_SYSTEM; i++) {
         const char *s = lines[i];
         if (kinds[i] != L_RESULT) continue;
-        if (s[0] == '=' && !strchr(s, ',') && !strstr(s, "/(") && strlen(s + 2) <= MAXIN) strcpy(ans, s + 2);
+        if (s[0] == '=' && !strchr(s, ',')) {
+            if (strlen(s + 2) <= MAXIN) strcpy(ans, s + 2);
+            else ans_long = 1;
+        }
         break;
     }
 }
@@ -266,6 +295,18 @@ static void insert(const char *t)
     cur += n;
 }
 
+/* 2nd math types =, and again right after cycles it through < > <= >= */
+static void relation(void)
+{
+    static const char cycle[] = { '=', '<', '>', G_LE[0], G_GE[0], '=', 0 };
+    const char *p;
+    if (cur && (p = strchr(cycle, in[cur - 1])) && *p) {
+        in[cur - 1] = p[1];
+        return;
+    }
+    insert("=");
+}
+
 int main(void)
 {
     char ch[2] = { 0, 0 };
@@ -275,7 +316,7 @@ int main(void)
     gfx_Begin();
     gfx_SetDrawBuffer();
     for (i = 0; i < (int)(sizeof rgb / sizeof *rgb); i++) gfx_palette[i] = gfx_RGBTo1555(rgb[i][0], rgb[i][1], rgb[i][2]);
-    for (i = 0; i < (int)(sizeof glyphs / sizeof *glyphs); i++) gfx_SetCharData(i + 1, glyphs[i]);
+    for (i = 0; i < (int)(sizeof glyphs / sizeof *glyphs); i++) gfx_SetCharData(glyphs[i][0], glyphs[i] + 1);
     gfx_SetMonospaceFont(8);
     gfx_SetTextTransparentColor(C_NONE);
     gfx_SetTextBGColor(C_NONE);
@@ -283,7 +324,9 @@ int main(void)
 
     for (;;) {
         draw();
-        while (!(k = os_GetCSC()));
+        k = pending;
+        pending = 0;
+        while (!k) k = os_GetCSC();
         msg = 0;
         page = (BAR - 2 - (15 + input_rows() * RH + 6)) / RH;
 
@@ -307,7 +350,15 @@ int main(void)
             mode = M_NONE;
             if (k == sk_Mode) break;
             if (k == sk_Math) {
-                insert("=");
+                relation();
+                continue;
+            }
+            if (k == sk_DecPnt) {
+                insert("i");
+                continue;
+            }
+            if (k == sk_Yequ || k == sk_Window || k == sk_Zoom || k == sk_Trace) {
+                run(k == sk_Yequ ? CMD_VERTEX : k == sk_Window ? CMD_ZEROS : k == sk_Zoom ? CMD_SYSTEM : CMD_INVERSE);
                 continue;
             }
             if (k == sk_Enter) {
@@ -322,8 +373,8 @@ int main(void)
             else if (k == sk_Right) cur = strlen(in);
             else if (k == sk_Up) scroll -= page;
             else if (k == sk_Down) scroll += page;
-            else msg = "2nd + key not used";
-            continue;
+            else if (k != sk_Graph) msg = "2nd + key not used";
+            if (k != sk_Graph) continue;
         }
         switch (k) {
         case sk_Yequ: run(CMD_EXPAND); break;
@@ -336,7 +387,7 @@ int main(void)
             nout = sizeof help / sizeof *help;
             show(KEYS);
             break;
-        case sk_Enter: run(equation() ? CMD_SOLVE : last); break;
+        case sk_Enter: run(equation() && last < CMD_VERTEX ? CMD_SOLVE : last); break;
         case sk_Del:
             if (cur) {
                 memmove(in + cur - 1, in + cur, strlen(in) - cur + 1);
