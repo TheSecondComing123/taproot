@@ -3454,6 +3454,12 @@ static void do_vertex(Rat r)
     say(MORE, "%q", &k);
 }
 
+__attribute__((noreturn)) static void one_var(const char *cmd)
+{
+    say(L_ERROR | OPEN, "%s needs a function of one variable", cmd);
+    die();
+}
+
 /* r at an exact x, which may be y */
 static void qrat(Q *y, const Rat *r, int v, const Q *x)
 {
@@ -3469,7 +3475,7 @@ static void do_zeros(Rat r)
     int v = ratvar(r), i, real, dn, dd, x, zero_out = 0;
     static Q y, lc;
     Pt *p;
-    if (v < 0 || v == iv || hasi(r.n)) fail("zeros needs a function of one variable");
+    if (v < 0 || v == iv || hasi(r.n)) one_var("zeros");
     x = vars[v];
     npts = pstrlen = 0;
     dn = pdeg(r.n, v);
@@ -3548,7 +3554,7 @@ static void do_inverse(Rat r)
     Q *A = da + 1, *B = da, *C = db + 1, *D = db;
     int v = ratvar(r), dn, dd, x;
     Rat f;
-    if (v < 0 || v == iv) fail("inverse needs a function of one variable");
+    if (v < 0 || v == iv) one_var("inverse");
     x = vars[v];
     dn = pdeg(r.n, v);
     dd = r.d ? pdeg(r.d, v) : 0;
