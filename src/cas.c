@@ -3566,8 +3566,8 @@ static void do_zeros(Rat r)
 static void do_inverse(Rat r)
 {
     static Q a, b, c, h, k, t, one;
+    Q *A = da + 1, *B = da, *C = db + 1, *D = db;
     int v = ratvar(r), dn, dd, x;
-    uint8_t e[NV] = { 0 };
     Rat f;
     if (v < 0 || v == iv) fail("inverse needs a function of one variable");
     x = vars[v];
@@ -3583,91 +3583,72 @@ static void do_inverse(Rat r)
             wvertex(&a, &h, &k, x);
             end();
         }
-        /* (y-h)^2 = (x-k)/a */
-        f.n = pvar(v);
-        t = k;
-        t.n = -t.n;
-        addterm(f.n, &t, e);
-        f.d = 0;
-        qdiv(&t, &one, &a);
-        replace(&f.n, pscale(f.n, &t));
+        /* (y-h)^2 = (x-k)/a = t x + c */
+        qnorm(&t, a.d, a.n);
+        qmul(&c, &k, &t);
+        c.n = -c.n;
         say(L_STEP | OPEN, "%c = ", x);
         wvertex(&a, &h, &k, 'y');
         end();
         begin(L_STEP);
         wvertex(&one, &h, 0, 'y');
-        say(MORE, " = %r", f);
+        say(MORE, " = %L", &t, x, &c);
         say(L_RESULT | OPEN, "f^-1(%c) = ", x);
         if (h.n) wq(&h);
-        say(MORE, G_PM G_SQRT "(%r)", f);
+        say(MORE, G_PM G_SQRT "(%L)", &t, x, &c);
         say(L_APPROX, "not one-to-one: + for %c" G_GE "%q, - for %c" G_LE "%q", x, &h, x, &h);
         return;
     }
     if (dn > 1 || dd > 1 || (dn < 1 && dd < 1)) fail("inverse works for linear, quadratic and (ax+b)/(cx+d)");
     /* x = (A y + B)/(C y + D)  ->  y (C x - A) = B - D x */
-    {
-        static Q A, B, C, D, nA, nD, zero;
-        todense(r.n, v, da);
-        A = da[1];
-        B = da[0];
-        qset(&C, 0);
-        qset(&D, 1);
-        if (r.d) {
-            todense(r.d, v, db);
-            C = db[1];
-            D = db[0];
-        }
-        qmul(&t, &A, &D);
-        qmul(&h, &B, &C);
-        qsub(&t, &t, &h);
-        if (!t.n) fail("this function is constant, so it has no inverse");
-        nA = A;
-        nA.n = -A.n;
-        nD = D;
-        nD.n = -D.n;
-        qset(&zero, 0);
-        if (C.n) {
-            say(L_STEP, "%c = %P/%P", x, &A, 'y', &B, &C, 'y', &D);
-            if (D.n) {
-                say(L_STEP, "%c(%L) = %L", x, &C, 'y', &D, &A, 'y', &B);
-                say(L_STEP, "%M%cy%T%c = %L", &C, x, &D, x, &A, 'y', &B);
-            } else {
-                say(L_STEP, "%M%cy = %L", &C, x, &A, 'y', &B);
-            }
-            if (A.n) {
-                say(L_STEP, "%M%cy%Ty = %L", &C, x, &nA, &nD, x, &B);
-                say(L_STEP, "y(%L) = %L", &C, x, &nA, &nD, x, &B);
-            } else {
-                say(L_STEP, "%M%cy = %L", &C, x, &nD, x, &B);
-            }
-        } else {
-            if (qone(&D)) {
-                say(L_STEP, "%c = %L", x, &A, 'y', &B);
-            } else {
-                say(L_STEP, "%c = %P/%q", x, &A, 'y', &B, &D);
-                say(L_STEP, "%L = %L", &D, x, &zero, &A, 'y', &B);
-            }
-            t = B;
-            t.n = -t.n;
-            say(L_STEP, "%L = %L", &A, 'y', &zero, &D, x, &t);
-        }
-        e[v] = 1;
-        f.n = pnew();
-        addterm(f.n, &nD, e);
-        e[v] = 0;
-        addterm(f.n, &B, e);
-        if (C.n) {
-            f.d = pnew();
-            e[v] = 1;
-            addterm(f.d, &C, e);
-            e[v] = 0;
-            addterm(f.d, &nA, e);
-        } else {
-            f.d = pconst(&nA);
-        }
-        rsimp(&f);
-        say(L_RESULT, "f^-1(%c) = %r", x, f);
+    todense(r.n, v, da);
+    if (r.d) {
+        todense(r.d, v, db);
+    } else {
+        qset(C, 0);
+        qset(D, 1);
     }
+    qmul(&t, A, D);
+    qmul(&h, B, C);
+    qsub(&t, &t, &h);
+    if (!t.n) fail("this function is constant, so it has no inverse");
+    if (C->n) {
+        say(L_STEP, "%c = %P/%P", x, A, 'y', B, C, 'y', D);
+        if (D->n) {
+            say(L_STEP, "%c(%L) = %L", x, C, 'y', D, A, 'y', B);
+            say(L_STEP, "%M%cy%T%c = %L", C, x, D, x, A, 'y', B);
+        } else {
+            say(L_STEP, "%M%cy = %L", C, x, A, 'y', B);
+        }
+        A->n = -A->n;
+        D->n = -D->n;
+        if (A->n) {
+            say(L_STEP, "%M%cy%Ty = %L", C, x, A, D, x, B);
+            say(L_STEP, "y(%L) = %L", C, x, A, D, x, B);
+        } else {
+            say(L_STEP, "%M%cy = %L", C, x, D, x, B);
+        }
+    } else {
+        if (qone(D)) {
+            say(L_STEP, "%c = %L", x, A, 'y', B);
+        } else {
+            say(L_STEP, "%c = %P/%q", x, A, 'y', B, D);
+            say(L_STEP, "%L = %L", D, x, C, A, 'y', B);
+        }
+        t = *B;
+        t.n = -t.n;
+        say(L_STEP, "%L = %L", A, 'y', C, D, x, &t);
+        A->n = -A->n;
+        D->n = -D->n;
+    }
+    /* (-D x + B)/(C x - A) */
+    t = *A;
+    *A = *D;
+    *D = t;
+    f.n = fromdense(da, 1, v);
+    f.d = fromdense(db, 1, v);
+    rsimp(&f);
+    say(L_RESULT, "f^-1(%c) = %r", x, f);
 }
 
 /* ---------- systems ---------- */
