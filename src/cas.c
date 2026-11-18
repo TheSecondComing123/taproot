@@ -2134,10 +2134,10 @@ static void numeric(int fmult)
     xdiv(&u.r, &m, &u.r);
     rseti(&m, n);
     xdiv(&m, &c[n - 1], &m);
-    for (k = 0; k < n; k++) {
-        zb[k] = w2;
-        xsub(&zb[k].r, &zb[k].r, &m);
-        mb[k] = 1;
+    for (zk = zb, mk = mb; zk < ze; zk++, mk++) {
+        *zk = w2;
+        xsub(&zk->r, &zk->r, &m);
+        *mk = 1;
         cmul(&w2, &u);
     }
     rten(&eps, -12);
