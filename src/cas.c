@@ -904,7 +904,7 @@ static void longdiv(Q *num, int dn, const Q *den, int dd, int v, Q *quo)
         e[v] = i - dd;
         begin(L_STEP);
         wmono(&quo[i - dd], e, 1);
-        say(MORE, "%s%p), left %p", G_DOT "(", prod, left);
+        say(MORE, G_DOT "(%p), left %p", prod, left);
         pfree(prod);
         pfree(left);
     }
