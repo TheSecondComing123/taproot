@@ -2105,8 +2105,9 @@ static void numeric(int fmult)
     static Cx w2, u, p, d, t, sum;
     static R m, maxd, tk, stp, eps;
     R tol, rad, r;
-    int k, j, it, mult, cx, n = ideg, base = nz;
-    Cx *zb = z + base, *ze = zb + n, *zk, *zj;
+    int k, j, it, mult, cx, nn, n = ideg;
+    Cx *zb = z + nz, *ze = zb + n, *zk, *zj;
+    int *mb = zm + nz;
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
     /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2. stp = 2^k: doubling is exact */
     rseti(&rad, 1);
@@ -2133,10 +2134,10 @@ static void numeric(int fmult)
     xdiv(&u.r, &m, &u.r);
     rseti(&m, n);
     xdiv(&m, &c[n - 1], &m);
-    for (k = base; k < base + n; k++) {
-        z[k] = w2;
-        xsub(&z[k].r, &z[k].r, &m);
-        zm[k] = 1;
+    for (k = 0; k < n; k++) {
+        zb[k] = w2;
+        xsub(&zb[k].r, &zb[k].r, &m);
+        mb[k] = 1;
         cmul(&w2, &u);
     }
     rten(&eps, -12);
@@ -2162,26 +2163,26 @@ static void numeric(int fmult)
 
     /* repeated roots come back as a tight cluster: merge it, then polish on the derivative where it's a simple root.
        the last newton step estimates the error */
-    nz = base;
-    for (k = base; k < base + n; k++) {
-        if (!zm[k]) continue;
-        sum = z[k];
+    nn = 0;
+    for (k = 0; k < n; k++) {
+        if (!mb[k]) continue;
+        sum = zb[k];
         mult = 1;
-        for (j = k + 1; j < base + n; j++) {
+        for (j = k + 1; j < n; j++) {
             /* compared in x units, not the scaled y ones */
-            t = z[j];
-            csubrel(&m, &t, &z[k]);
+            t = zb[j];
+            csubrel(&m, &t, &zb[k]);
             cnorm(&m, &t);
             xmul(&m, &m, &rad);
-            cnorm(&tol, &z[k]);
+            cnorm(&tol, &zb[k]);
             xmul(&tol, &tol, &rad);
             rtol(&tol, &tol, -3);
             /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
-            if (!zm[j] || rlt(&tol, &m)) continue;
-            xadd(&sum.r, &sum.r, &z[j].r);
-            xadd(&sum.i, &sum.i, &z[j].i);
+            if (!mb[j] || rlt(&tol, &m)) continue;
+            xadd(&sum.r, &sum.r, &zb[j].r);
+            xadd(&sum.i, &sum.i, &zb[j].i);
             mult++;
-            zm[j] = 0;
+            mb[j] = 0;
         }
         rseti(&m, mult);
         xdiv(&sum.r, &sum.r, &m);
@@ -2218,42 +2219,43 @@ static void numeric(int fmult)
         t.r = sum.i;
         rabs(&t.r);
         if (rlt(&t.r, &tol)) rseti(&sum.i, 0);
-        z[nz] = sum;
-        zm[nz++] = mult * fmult;
+        zb[nn] = sum;
+        mb[nn++] = mult * fmult;
     }
     /* complex roots of a real polynomial come in conjugate pairs, so a loner is a real root whose cluster
        spread too wide for 14 digits: make it real and fold it into the nearest real cluster */
-    for (k = base; k < nz; k++) {
-        if (rzero(&z[k].i)) continue;
-        for (j = base; j < nz; j++) {
-            if (j == k || zm[j] != zm[k]) continue;
-            xadd(&t.i, &z[j].i, &z[k].i);
-            xsub(&t.r, &z[j].r, &z[k].r);
+    for (k = 0; k < nn; k++) {
+        if (rzero(&zb[k].i)) continue;
+        for (j = 0; j < nn; j++) {
+            if (j == k || mb[j] != mb[k]) continue;
+            xadd(&t.i, &zb[j].i, &zb[k].i);
+            xsub(&t.r, &zb[j].r, &zb[k].r);
             cnorm(&m, &t);
-            rtol(&tol, &z[k].r, -3);
+            rtol(&tol, &zb[k].r, -3);
             if (rlt(&m, &tol)) break;
         }
-        if (j == nz) {
-            rseti(&z[k].i, 0);
-            zm[k] = -zm[k]; /* marks a loner for the next pass */
+        if (j == nn) {
+            rseti(&zb[k].i, 0);
+            mb[k] = -mb[k]; /* marks a loner for the next pass */
         }
     }
-    for (k = base; k < nz; k++) {
-        if (zm[k] >= 0) continue;
-        zm[k] = -zm[k];
-        for (j = base; j < nz; j++) {
-            if (j == k || !rzero(&z[j].i) || zm[j] < 2) continue;
-            xsub(&m, &z[j].r, &z[k].r);
+    for (k = 0; k < nn; k++) {
+        if (mb[k] >= 0) continue;
+        mb[k] = -mb[k];
+        for (j = 0; j < nn; j++) {
+            if (j == k || !rzero(&zb[j].i) || mb[j] < 2) continue;
+            xsub(&m, &zb[j].r, &zb[k].r);
             rabs(&m);
-            rtol(&tol, &z[k].r, -2);
+            rtol(&tol, &zb[k].r, -2);
             if (rlt(&tol, &m)) continue;
             /* the cluster's polished value is the better one; it just gains the loner's multiplicity */
-            zm[j] += zm[k];
-            z[k] = z[--nz];
-            zm[k--] = zm[nz];
+            mb[j] += mb[k];
+            zb[k] = zb[--nn];
+            mb[k--] = mb[nn];
             break;
         }
     }
+    nz += nn;
     for (k = 1; k < nz; k++) {
         t = z[k];
         mult = zm[k];
