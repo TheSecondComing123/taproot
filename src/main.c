@@ -237,12 +237,6 @@ static void draw(void)
     gfx_SwapDraw();
 }
 
-static void show(int cmd)
-{
-    shown = cmd;
-    scroll = 0;
-}
-
 /* = or an inequality before the first top-level comma; the ones after it are values like x=3 */
 static int equation(void)
 {
@@ -290,7 +284,8 @@ static void run(int cmd)
     lines = cas_line;
     kinds = cas_kind;
     nout = cas_nlines;
-    show(cmd);
+    shown = cmd;
+    scroll = 0;
     *ans = 0;
     ans_long = 0;
     for (i = 0; i < nout && cmd != CMD_SOLVE && cmd != CMD_SYSTEM; i++) {
@@ -396,7 +391,8 @@ int main(void)
             lines = help;
             kinds = help_kind;
             nout = sizeof help / sizeof *help;
-            show(KEYS);
+            shown = KEYS;
+            scroll = 0;
             break;
         case sk_Enter: run(equation() && last < CMD_VERTEX ? CMD_SOLVE : last); break;
         case sk_Del:
