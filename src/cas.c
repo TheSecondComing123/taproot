@@ -1863,25 +1863,33 @@ static void wmult(int mult)
     say(MORE | OPEN, " (multiplicity %d)", mult);
 }
 
+/* digit i of t's mantissa as a char, '0' past either end */
+static char rdig(const R *t, int i)
+{
+    uint8_t b;
+    if (i < 0 || i >= 14) return '0';
+    b = t->mant[i / 2];
+    if (!(i & 1)) b >>= 4;
+    return '0' + (b & 15);
+}
+
 /* x rounded to 6 decimals, trailing zeros dropped */
 static void wreal(const R *x)
 {
     R t = os_RealRound(x, 6);
-    int e = (uint8_t)t.exp - 0x80, p, last = 0, k;
-    uint8_t dig[16];
-    for (k = 0; k < 14; k++) dig[k] = (t.mant[k / 2] >> (k & 1 ? 0 : 4)) & 15;
+    int e = (uint8_t)t.exp - 0x80, p, last = 0;
     if (rzero(&t)) {
         wputc('0');
         return;
     }
     if (e > 12) fail("root too big to print");
     if (t.sign & 0x80) wputc('-');
-    for (p = e < 0 ? 0 : e; p >= 0; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
     for (p = -1; p >= -6; p--)
-        if (e - p >= 0 && e - p < 14 && dig[e - p]) last = p;
-    if (!last) return;
-    wputc('.');
-    for (p = -1; p >= last; p--) wputc('0' + (e - p >= 0 && e - p < 14 ? dig[e - p] : 0));
+        if (rdig(&t, e - p) != '0') last = p;
+    for (p = e < 0 ? 0 : e; p >= last; p--) {
+        if (p == -1) wputc('.');
+        wputc(rdig(&t, e - p));
+    }
 }
 
 /* (num ± k·√r·i^neg)/den, or with sgn != 0 just the + or - root */
@@ -1902,16 +1910,15 @@ static void wradical(int32_t num, int32_t k, int32_t r, int neg, int32_t den, in
     }
 }
 
-static void wparen(int32_t n)
+/* a b - c d */
+static int32_t ckcross(int32_t a, int32_t b, int32_t c, int32_t d)
 {
-    if (n < 0) wputc('(');
-    wll(n);
-    if (n < 0) wputc(')');
+    return ckadd(ckmul(a, b), -ckmul(c, d));
 }
 
 static int32_t disc(int32_t a, int32_t b, int32_t c)
 {
-    return ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
+    return ckcross(b, b, 4, ckmul(a, c));
 }
 
 /* pw 2 solves for v^2 */
@@ -1919,18 +1926,13 @@ static void quad_steps(int32_t a, int32_t b, int32_t c, int v, int pw)
 {
     int32_t d = disc(a, b, c), r, sq;
     int neg = d < 0;
+    Q bq = { b, 1 };
     sq = sqpart(neg ? -d : d, &r);
     say(L_STEP, "quadratic formula: a=%l, b=%l, c=%l", a, b, c);
-    say(L_STEP | OPEN, "disc = ");
-    wparen(b);
-    say(MORE, "^2-4(%l)(%l) = %l", a, c, d);
+    say(L_STEP, "disc = %Q^2-4(%l)(%l) = %l", &bq, a, c, d);
     if (sq != 1 || neg) {
         say(L_STEP | OPEN, G_SQRT "%l = ", d);
-        if (sq != 1 || r == 1) wll(sq);
-        if (neg) wputc('i');
-        if (r != 1) {
-            say(MORE | OPEN, G_SQRT "%l", r);
-        }
+        wradical(0, sq, r, neg, 1, 1);
         end();
     }
     if (gcd(gcd(b, sq), 2 * a) != 1) {
@@ -1968,8 +1970,7 @@ static void quad_result(int32_t a, int32_t b, int32_t c, int v, int mult)
     xsqrt(&im, &im);
     rset(&t, 2 * a);
     xdiv(&im, &im, &t);
-    say(L_APPROX | OPEN, "%c", vars[v]);
-    wputs(" " G_APPROX " ");
+    say(L_APPROX | OPEN, "%c " G_APPROX " ", vars[v]);
     if (neg) {
         if (b) wreal(&re);
         say(MORE | OPEN, G_PM "%Ri", &im);
@@ -1985,32 +1986,38 @@ static void quad_result(int32_t a, int32_t b, int32_t c, int v, int mult)
     end();
 }
 
+/* rset for an int: one argument slot less per call */
+static void rseti(R *r, int v)
+{
+    rset(r, v);
+}
+
+/* r = a b op c d, op xadd or xsub */
+static void xdot(R *r, const R *a, const R *b, const R *c, const R *d, void (*op)(R *, const R *, const R *))
+{
+    R t, u;
+    xmul(&t, a, b);
+    xmul(&u, c, d);
+    op(r, &t, &u);
+}
+
 __attribute__((noinline)) static void cmul(Cx *a, const Cx *b)
 {
-    R t1, t2, t3, t4;
-    xmul(&t1, &a->r, &b->r);
-    xmul(&t2, &a->i, &b->i);
-    xmul(&t3, &a->r, &b->i);
-    xmul(&t4, &a->i, &b->r);
-    xsub(&a->r, &t1, &t2);
-    xadd(&a->i, &t3, &t4);
+    R t;
+    xdot(&t, &a->r, &b->r, &a->i, &b->i, xsub);
+    xdot(&a->i, &a->r, &b->i, &a->i, &b->r, xadd);
+    a->r = t;
 }
 
 __attribute__((noinline)) static void cdiv(Cx *a, const Cx *b)
 {
-    R m, t1, t2;
-    xmul(&m, &b->r, &b->r);
-    xmul(&t1, &b->i, &b->i);
-    xadd(&m, &m, &t1);
+    R m, t;
+    xdot(&m, &b->r, &b->r, &b->i, &b->i, xadd);
     if (rzero(&m)) rten(&m, -30);
-    xmul(&t1, &a->r, &b->r);
-    xmul(&t2, &a->i, &b->i);
-    xadd(&t1, &t1, &t2);
-    xmul(&t2, &a->i, &b->r);
-    xmul(&a->i, &a->r, &b->i);
-    xsub(&a->i, &t2, &a->i);
+    xdot(&t, &a->r, &b->r, &a->i, &b->i, xadd);
+    xdot(&a->i, &a->i, &b->r, &a->r, &b->i, xsub);
     xdiv(&a->i, &a->i, &m);
-    xdiv(&a->r, &t1, &m);
+    xdiv(&a->r, &t, &m);
 }
 
 __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
@@ -2025,138 +2032,130 @@ __attribute__((noinline)) static void cnorm(R *r, const Cx *a)
 /* a -= b, r = |b| relative to the new a */
 __attribute__((noinline)) static void csubrel(R *r, Cx *a, const Cx *b)
 {
-    R t, one;
+    R t;
     xsub(&a->r, &a->r, &b->r);
     xsub(&a->i, &a->i, &b->i);
     cnorm(&t, a);
-    rset(&one, 1);
-    xadd(&t, &t, &one);
+    rtol(&t, &t, 0);
     cnorm(r, b);
     xdiv(r, r, &t);
 }
 
-/* value of the d-th derivative of monic c (degree n) at z */
-__attribute__((noinline)) static void horner(const R *c, int n, int d, const Cx *zz, Cx *v)
+/* value of the d-th derivative of monic c (degree ideg) at z. with abs, at a real z >= 0 and with every coefficient
+   made positive: the scale rounding errors in the d-th derivative work against */
+__attribute__((noinline)) static void horner(const R *c, int d, const Cx *zz, Cx *v, int abs)
 {
     R f;
     int32_t k;
     int j, t;
-    rset(&v->r, 0);
-    rset(&v->i, 0);
-    for (j = n; j >= d; j--) {
+    rseti(&v->r, 0);
+    rseti(&v->i, 0);
+    for (j = ideg; j >= d; j--) {
         for (k = 1, t = 0; t < d; t++) k *= j - t;
         rset(&f, k);
         xmul(&f, &f, &c[j]);
+        if (abs) rabs(&f);
         cmul(v, zz);
         xadd(&v->r, &v->r, &f);
     }
 }
 
-/* sum of |d-th derivative coefficient| |x|^k: the scale rounding errors in the d-th derivative work against */
-__attribute__((noinline)) static void hornabs(const R *c, int n, int d, const R *x, R *v)
+static void rmax(R *a, const R *b)
 {
-    R f;
-    int32_t k;
-    int j, t;
-    rset(v, 0);
-    for (j = n; j >= d; j--) {
-        for (k = 1, t = 0; t < d; t++) k *= j - t;
-        rset(&f, k);
-        xmul(&f, &f, &c[j]);
-        rabs(&f);
-        xmul(v, v, x);
-        xadd(v, v, &f);
-    }
+    if (rlt(a, b)) *a = *b;
 }
 
 static void numeric(int fmult)
 {
     static R c[MAXD + 1];
     static Cx w2, u, p, d, t, sum;
-    static R m, maxd, rad, r, tk, stp, two, eps, tol;
-    int k, j, it, mult, n = ideg, base = nz;
+    static R m, maxd, tk, stp, eps;
+    R tol, rad, r;
+    int k, j, it, mult, cx, nn, n = ideg;
+    Cx *zb = z + nz, *ze = zb + n, *zk, *zj;
+    int *mb = zm + nz, *mk, *mj;
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
-    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2 */
-    rset(&rad, 1);
-    rset(&two, 2);
+    /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2. stp = 2^k: doubling is exact */
+    rseti(&rad, 1);
+    rseti(&stp, 1);
     for (k = 1; k <= n; k++) {
         R a = c[n - k];
         rabs(&a);
-        for (rset(&r, 1), rset(&tk, 1), rset(&stp, 1), j = 0; j < k; j++) xmul(&stp, &stp, &two);
-        for (; rlt(&tk, &a); xmul(&tk, &tk, &stp)) xmul(&r, &r, &two);
-        if (rlt(&rad, &r)) rad = r;
+        xadd(&stp, &stp, &stp);
+        for (rseti(&r, 1), rseti(&tk, 1); rlt(&tk, &a); xmul(&tk, &tk, &stp)) xadd(&r, &r, &r);
+        rmax(&rad, &r);
     }
     /* work in y = x/rad so every root sits near the unit circle and nothing overflows the os reals */
-    for (rset(&r, 1), k = n - 1; k >= 0; k--) {
+    for (rseti(&r, 1), k = n - 1; k >= 0; k--) {
         xmul(&r, &r, &rad);
         xdiv(&c[k], &c[k], &r);
     }
-    rset(&w2.r, 2);
-    rset(&w2.i, 0);
-    rset(&u.r, 97);
+    rseti(&w2.r, 2);
+    rseti(&w2.i, 0);
+    rseti(&u.r, 97);
     xsqrt(&u.r, &u.r);
-    rset(&u.i, 9);
+    rseti(&u.i, 9);
     xdiv(&u.i, &u.i, &u.r);
-    rset(&m, 4);
+    rseti(&m, 4);
     xdiv(&u.r, &m, &u.r);
-    rset(&m, n);
+    rseti(&m, n);
     xdiv(&m, &c[n - 1], &m);
-    for (k = base; k < base + n; k++) {
-        z[k] = w2;
-        xsub(&z[k].r, &z[k].r, &m);
-        zm[k] = 1;
+    for (zk = zb, mk = mb; zk < ze; zk++, mk++) {
+        *zk = w2;
+        xsub(&zk->r, &zk->r, &m);
+        *mk = 1;
         cmul(&w2, &u);
     }
     rten(&eps, -12);
     for (it = 0; it < 1000; it++) {
         poll();
-        rset(&maxd, 0);
-        for (k = base; k < base + n; k++) {
-            horner(c, n, 0, &z[k], &p);
-            rset(&d.r, 1);
-            rset(&d.i, 0);
-            for (j = base; j < base + n; j++) {
-                if (j == k) continue;
-                t = z[k];
-                csubrel(&m, &t, &z[j]);
+        rseti(&maxd, 0);
+        for (zk = zb; zk < ze; zk++) {
+            horner(c, 0, zk, &p, 0);
+            rseti(&d.r, 1);
+            rseti(&d.i, 0);
+            for (zj = zb; zj < ze; zj++) {
+                if (zj == zk) continue;
+                t = *zk;
+                csubrel(&m, &t, zj);
                 cmul(&d, &t);
             }
             cdiv(&p, &d);
-            csubrel(&m, &z[k], &p);
-            if (rlt(&maxd, &m)) maxd = m;
+            csubrel(&m, zk, &p);
+            rmax(&maxd, &m);
         }
         if (rlt(&maxd, &eps)) break;
     }
 
     /* repeated roots come back as a tight cluster: merge it, then polish on the derivative where it's a simple root.
        the last newton step estimates the error */
-    nz = base;
-    for (k = base; k < base + n; k++) {
-        if (!zm[k]) continue;
-        sum = z[k];
+    nn = 0;
+    for (zk = zb, mk = mb; zk < ze; zk++, mk++) {
+        if (!*mk) continue;
+        sum = *zk;
         mult = 1;
-        for (j = k + 1; j < base + n; j++) {
+        for (zj = zk + 1, mj = mk + 1; zj < ze; zj++, mj++) {
             /* compared in x units, not the scaled y ones */
-            t = z[j];
-            csubrel(&m, &t, &z[k]);
+            t = *zj;
+            csubrel(&m, &t, zk);
             cnorm(&m, &t);
             xmul(&m, &m, &rad);
-            cnorm(&tol, &z[k]);
+            cnorm(&tol, zk);
             xmul(&tol, &tol, &rad);
             rtol(&tol, &tol, -3);
             /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
-            if (!zm[j] || rlt(&tol, &m)) continue;
-            xadd(&sum.r, &sum.r, &z[j].r);
-            xadd(&sum.i, &sum.i, &z[j].i);
+            if (!*mj || rlt(&tol, &m)) continue;
+            xadd(&sum.r, &sum.r, &zj->r);
+            xadd(&sum.i, &sum.i, &zj->i);
             mult++;
-            zm[j] = 0;
+            *mj = 0;
         }
-        rset(&m, mult);
+        rseti(&m, mult);
         xdiv(&sum.r, &sum.r, &m);
         xdiv(&sum.i, &sum.i, &m);
-        for (rset(&m, 0), it = 0; it < 8; it++) {
-            horner(c, n, mult - 1, &sum, &p);
-            horner(c, n, mult, &sum, &d);
+        for (rseti(&m, 0), it = 0; it < 8; it++) {
+            horner(c, mult - 1, &sum, &p, 0);
+            horner(c, mult, &sum, &d, 0);
             if (rzero(&d.r) && rzero(&d.i)) break;
             cdiv(&p, &d);
             csubrel(&m, &sum, &p);
@@ -2164,74 +2163,75 @@ static void numeric(int fmult)
         /* forward error ~ the last newton step plus the condition number times the reals' 1e-14 rounding:
            an ill-conditioned expansion like (x+2)^40-1 converges nicely to roots of the rounded polynomial */
         {
-            R ay, num;
-            cnorm(&ay, &sum);
-            hornabs(c, n, mult - 1, &ay, &num);
-            horner(c, n, mult, &sum, &d);
+            Cx ay, num;
+            cnorm(&ay.r, &sum);
+            rseti(&ay.i, 0);
+            horner(c, mult - 1, &ay, &num, 1);
+            horner(c, mult, &sum, &d, 0);
             cnorm(&tol, &d);
-            rset(&eps, 1);
-            xadd(&ay, &ay, &eps);
-            xmul(&tol, &tol, &ay);
+            rtol(&ay.r, &ay.r, 0);
+            xmul(&tol, &tol, &ay.r);
             rten(&eps, -14);
-            xmul(&num, &num, &eps);
+            xmul(&num.r, &num.r, &eps);
             if (rzero(&tol)) rten(&tol, -99);
-            xdiv(&num, &num, &tol);
-            xadd(&m, &m, &num);
+            xdiv(&num.r, &num.r, &tol);
+            xadd(&m, &m, &num.r);
         }
-        if (rlt(&dkerr, &m)) dkerr = m;
+        rmax(&dkerr, &m);
         xmul(&sum.r, &sum.r, &rad);
         xmul(&sum.i, &sum.i, &rad);
         /* a merged cluster only knows its root to about eps^(1/mult), so it gets a looser real-or-not test */
         rtol(&tol, &sum.r, mult > 1 ? -4 : -7);
         t.r = sum.i;
         rabs(&t.r);
-        if (rlt(&t.r, &tol)) rset(&sum.i, 0);
-        z[nz] = sum;
-        zm[nz++] = mult * fmult;
+        if (rlt(&t.r, &tol)) rseti(&sum.i, 0);
+        zb[nn] = sum;
+        mb[nn++] = mult * fmult;
     }
     /* complex roots of a real polynomial come in conjugate pairs, so a loner is a real root whose cluster
        spread too wide for 14 digits: make it real and fold it into the nearest real cluster */
-    for (k = base; k < nz; k++) {
-        if (rzero(&z[k].i)) continue;
-        for (j = base; j < nz; j++) {
-            if (j == k || zm[j] != zm[k]) continue;
-            t = z[j];
-            xadd(&t.i, &t.i, &z[k].i);
-            xsub(&t.r, &t.r, &z[k].r);
+    for (k = 0; k < nn; k++) {
+        if (rzero(&zb[k].i)) continue;
+        for (j = 0; j < nn; j++) {
+            if (j == k || mb[j] != mb[k]) continue;
+            xadd(&t.i, &zb[j].i, &zb[k].i);
+            xsub(&t.r, &zb[j].r, &zb[k].r);
             cnorm(&m, &t);
-            rtol(&tol, &z[k].r, -3);
+            rtol(&tol, &zb[k].r, -3);
             if (rlt(&m, &tol)) break;
         }
-        if (j == nz) {
-            rset(&z[k].i, 0);
-            zm[k] = -zm[k]; /* marks a loner for the next pass */
+        if (j == nn) {
+            rseti(&zb[k].i, 0);
+            mb[k] = -mb[k]; /* marks a loner for the next pass */
         }
     }
-    for (k = base; k < nz; k++) {
-        if (zm[k] >= 0) continue;
-        zm[k] = -zm[k];
-        for (j = base; j < nz; j++) {
-            if (j == k || !rzero(&z[j].i) || zm[j] < 2) continue;
-            xsub(&m, &z[j].r, &z[k].r);
+    for (k = 0; k < nn; k++) {
+        if (mb[k] >= 0) continue;
+        mb[k] = -mb[k];
+        for (zj = zb, mj = mb; zj < zb + nn; zj++, mj++) {
+            if (zj == zb + k || !rzero(&zj->i) || *mj < 2) continue;
+            xsub(&m, &zj->r, &zb[k].r);
             rabs(&m);
-            rtol(&tol, &z[k].r, -2);
+            rtol(&tol, &zb[k].r, -2);
             if (rlt(&tol, &m)) continue;
             /* the cluster's polished value is the better one; it just gains the loner's multiplicity */
-            zm[j] += zm[k];
-            z[k] = z[--nz];
-            zm[k--] = zm[nz];
+            *mj += mb[k];
+            zb[k] = zb[--nn];
+            mb[k--] = mb[nn];
             break;
         }
     }
+    nz += nn;
     for (k = 1; k < nz; k++) {
         t = z[k];
         mult = zm[k];
-        for (j = k; j > 0 && (!rzero(&z[j - 1].i) > !rzero(&t.i) || (!rzero(&z[j - 1].i) == !rzero(&t.i) && rlt(&t.r, &z[j - 1].r))); j--) {
-            z[j] = z[j - 1];
-            zm[j] = zm[j - 1];
+        /* real roots first, then by real part */
+        for (zj = z + k, mj = zm + k; zj > z && ((cx = rzero(&zj[-1].i) - rzero(&t.i)) ? cx < 0 : rlt(&t.r, &zj[-1].r)); zj--, mj--) {
+            *zj = zj[-1];
+            *mj = mj[-1];
         }
-        z[j] = t;
-        zm[j] = mult;
+        *zj = t;
+        *mj = mult;
     }
     rten(&m, -3);
     if (!rlt(&dkerr, &m)) fail("too sensitive to solve numerically");
@@ -2243,8 +2243,7 @@ static void numeric_result(int v)
     int k;
     for (k = 0; k < nz; k++) {
         if (z[k].i.sign & 0x80) continue;
-        say(L_APPROX | OPEN, "%c", vars[v]);
-        wputs(" " G_APPROX " ");
+        say(L_APPROX | OPEN, "%c " G_APPROX " ", vars[v]);
         wreal(&z[k].r);
         if (!rzero(&z[k].i)) {
             say(MORE | OPEN, G_PM "%Ri", &z[k].i);
@@ -2300,23 +2299,24 @@ static int quartic_split(int v)
                 int32_t p1 = dv0[i], p2 = a4 / p1, r1 = sg * dvn[j], r2 = a0 / r1, det, q1, q2;
                 poll();
                 /* p2 q1 + p1 q2 = a3, r2 q1 + r1 q2 = a1 */
-                det = ckadd(ckmul(p2, r1), -ckmul(p1, r2));
+                det = ckcross(p2, r1, p1, r2);
                 if (det) {
-                    q1 = ckadd(ckmul(a3, r1), -ckmul(p1, a1));
-                    q2 = ckadd(ckmul(p2, a1), -ckmul(a3, r2));
+                    q1 = ckcross(a3, r1, p1, a1);
+                    q2 = ckcross(p2, a1, a3, r2);
                     if (q1 % det || q2 % det) continue;
                     q1 /= det;
                     q2 /= det;
                 } else {
                     /* the two linear conditions coincide: q1 = (a3 - p1 q2)/p2 into the x^2 one gives
                        p1 q2^2 - a3 q2 + p2 (a2 - p1 r2 - r1 p2) = 0 */
-                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = ckadd(ckmul(a3, a3), -ckmul(4, ckmul(p1, ckmul(p2, k2)))), sq2;
+                    int32_t k2 = ckadd(a2, -ckadd(ckmul(p1, r2), ckmul(r1, p2))), dd2 = disc(p1, a3, ckmul(p2, k2)), sq2;
                     if (dd2 < 0) continue;
                     sq2 = isqrt(dd2);
                     if (sq2 * sq2 != dd2 || (a3 + sq2) % (2 * p1)) continue;
                     q2 = (a3 + sq2) / (2 * p1);
-                    if (ckadd(a3, -ckmul(p1, q2)) % p2) continue;
-                    q1 = ckadd(a3, -ckmul(p1, q2)) / p2;
+                    q1 = ckadd(a3, -ckmul(p1, q2));
+                    if (q1 % p2) continue;
+                    q1 /= p2;
                     if (ckadd(ckmul(r2, q1), ckmul(r1, q2)) != a1) continue;
                 }
                 if (ckadd(ckadd(ckmul(p1, r2), ckmul(q1, q2)), ckmul(r1, p2)) != a2) continue;
@@ -2341,9 +2341,9 @@ static void toip(const Q *c, int deg)
     int32_t l = 1, g = 0;
     int i;
     for (i = 0; i <= deg; i++) l = lcm(l, c[i].d);
-    for (i = 0; i <= deg; i++) g = gcd(g, ckmul(c[i].n, l / c[i].d));
+    for (i = 0; i <= deg; i++) g = gcd(g, ip[i] = ckmul(c[i].n, l / c[i].d));
     if (c[deg].n < 0) g = -g;
-    for (i = 0; i <= deg; i++) ip[i] = ckmul(c[i].n, l / c[i].d) / g;
+    for (i = 0; i <= deg; i++) ip[i] /= g;
     ideg = deg;
 }
 
@@ -2351,40 +2351,44 @@ static void dderiv(const Q *c, int deg, Q *out)
 {
     int i;
     Q k;
-    for (i = 0; i <= MAXD; i++) qset(&out[i], 0);
-    for (i = 1; i <= deg; i++) {
-        qset(&k, i);
-        qmul(&out[i - 1], &c[i], &k);
+    for (i = 0; i <= MAXD; i++) {
+        qset(&k, i + 1);
+        qset(&out[i], 0);
+        if (i < deg) qmul(&out[i], &c[i + 1], &k);
     }
 }
 
 /* ax^4+bx^2+c whose x^2-quadratic has irrational roots: x^2 = (num +- k sqrt r)/den, and x is +-sqrt of each */
 static int nested(int v, int mult)
 {
-    int32_t d, sq;
-    if (ideg != 4 || ip[1] || ip[3] || (d = disc(ip[4], ip[2], ip[0])) <= 0) return 0;
+    int32_t a = ip[4], b = ip[2], c = ip[0], d, sq;
+    if (ideg != 4 || ip[1] || ip[3] || (d = disc(a, b, c)) <= 0) return 0;
     sq = isqrt(d);
     if (sq * sq == d) return 0;
     say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
-    quad_steps(ip[4], ip[2], ip[0], v, 2);
-    quad_parts(ip[4], ip[2], ip[0], &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
+    quad_steps(a, b, c, v, 2);
+    quad_parts(a, b, c, &nest4[0], &nest4[1], &nest4[2], &nest4[3]);
     nest4[4] = mult;
     /* the two x^2 multiply to c/a and add to -b/a, and a > 0 */
-    nest4[5] = ip[0] < 0 || ip[2] < 0;
-    nest4[6] = ip[0] > 0 && ip[2] < 0;
+    nest4[5] = c < 0 || b < 0;
+    nest4[6] = c > 0 && b < 0;
     say(L_STEP | OPEN, "%c^2 = ", vars[v]);
     wradical(nest4[0], nest4[1], nest4[2], 0, nest4[3], 0);
     end();
     return 1;
 }
 
+static int rational_quadratic(int mult);
+
 static void exact_or_numeric(int v, int mult)
 {
+    if (rational_quadratic(mult)) return;
     if (ideg == 1) {
         add_root(-ip[0], ip[1], mult);
     } else if (ideg == 2) {
-        addquad(ip[2], ip[1], ip[0], mult);
-        quad_steps(ip[2], ip[1], ip[0], v, 1);
+        int32_t a = ip[2], b = ip[1], c = ip[0];
+        addquad(a, b, c, mult);
+        quad_steps(a, b, c, v, 1);
     } else if (ideg == 4 && quartic_split(v)) {
         int i;
         for (i = nquads - 2; i < nquads; i++) {
@@ -2392,23 +2396,48 @@ static void exact_or_numeric(int v, int mult)
             quad_steps(quads[i].a, quads[i].b, quads[i].c, v, 1);
         }
     } else if (ideg >= 1 && !nested(v, mult)) {
-        int n = ideg;
         numeric(mult);
-        say(L_STEP, "no exact formula used for degree %d, solving numerically", n);
+        say(L_STEP, "no exact formula used for degree %d, solving numerically", ideg);
     }
 }
 
 static Q fac[2 * MAXD + 2];
 static int fdeg[MAXD], fmul[MAXD];
 
+static Q yt[MAXD + 1];
+
+/* dgcd's inputs */
+static void gload(const Q *a, const Q *b)
+{
+    memcpy(ga, a, sizeof ga);
+    memcpy(gb, b, sizeof gb);
+}
+
+/* q = n / gc, n of degree dn and gc of degree k */
+static void ydiv(const Q *n, int dn, int k, Q *q)
+{
+    memcpy(yt, n, sizeof yt);
+    ddiv(yt, dn, gc, k, q);
+}
+
+/* d -= c', c of degree nc; returns d's degree, -1 if it's 0 */
+static int ysubd(Q *d, const Q *c, int nc)
+{
+    int i;
+    dderiv(c, nc, yt);
+    for (i = 0; i <= MAXD; i++) qsub(&d[i], &d[i], &yt[i]);
+    for (i = MAXD; i >= 0 && !d[i].n; i--);
+    return i;
+}
+
 /* yun's algorithm on ip: square-free parts fac (monic, packed) where part i repeats fmul[i] times.
    returns how many parts, 0 if ip is square-free or the numbers overflow */
 static int sqfree(void)
 {
     /* da/db/dq are free while this runs; sharing them keeps bss under the calc's 60 kb */
-    static Q yt[MAXD + 1];
     Q *yp = da, *yd = db, *yc = dq;
-    int n = ideg, nc, nd, k, i, nf = 0, at = 0;
+    int n = ideg, nc, nd, k, i, nf = 0;
+    Q *f = fac;
     for (i = 0; i <= MAXD; i++) qset(&yp[i], i <= n ? ip[i] : 0);
     if (setjmp(soft_jmp)) {
         soft = 0;
@@ -2416,45 +2445,30 @@ static int sqfree(void)
     }
     soft = 1;
     dderiv(yp, n, yd);
-    memcpy(ga, yp, sizeof ga);
-    memcpy(gb, yd, sizeof gb);
+    gload(yp, yd);
     k = dgcd(n, n - 1);
     if (k > 0) {
         /* c = P/g, d = P'/g - c' */
         memcpy(gc, ga, sizeof gc);
-        memcpy(yt, yp, sizeof yt);
-        ddiv(yt, n, gc, k, yc);
+        ydiv(yp, n, k, yc);
         nc = n - k;
-        memcpy(yt, yd, sizeof yt);
-        ddiv(yt, n - 1, gc, k, yd);
-        dderiv(yc, nc, yt);
-        for (i = 0; i <= MAXD; i++) qsub(&yd[i], &yd[i], &yt[i]);
-        for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
+        ydiv(yd, n - 1, k, yd);
+        nd = ysubd(yd, yc, nc);
         for (i = 1; nc > 0; i++) {
             int na;
-            memcpy(ga, yc, sizeof ga);
-            memcpy(gb, yd, sizeof gb);
+            gload(yc, yd);
             na = nd >= 0 ? dgcd(nc, nd) : (monic(ga, nc), nc);
             if (na < 0) longjmp(soft_jmp, 1);
             memcpy(gc, ga, sizeof gc);
-            memcpy(yt, yc, sizeof yt);
-            ddiv(yt, nc, gc, na, yc);
+            ydiv(yc, nc, na, yc);
             nc -= na;
-            if (nd >= 0) {
-                memcpy(yt, yd, sizeof yt);
-                ddiv(yt, nd, gc, na, yd);
-            }
-            dderiv(yc, nc, yt);
-            for (k = 0; k <= MAXD; k++) {
-                if (nd < 0) qset(&yd[k], 0);
-                qsub(&yd[k], &yd[k], &yt[k]);
-            }
-            for (nd = MAXD; nd >= 0 && !yd[nd].n; nd--);
+            if (nd >= 0) ydiv(yd, nd, na, yd);
+            nd = ysubd(yd, yc, nc);
             if (na > 0) {
-                memcpy(fac + at, gc, (na + 1) * sizeof(Q));
+                memcpy(f, gc, (na + 1) * sizeof(Q));
                 fdeg[nf] = na;
                 fmul[nf++] = i;
-                at += na + 1;
+                f += na + 1;
             }
         }
     }
@@ -2466,14 +2480,15 @@ static int sqfree(void)
 static int rational_quadratic(int mult)
 {
     int32_t d, sq;
-    Q a, b;
+    int sg;
+    Q a;
     if (ideg != 2 || (d = disc(ip[2], ip[1], ip[0])) < 0) return 0;
     sq = isqrt(d);
     if (sq * sq != d) return 0;
-    qnorm(&a, ckadd(-ip[1], sq), ckmul(2, ip[2]));
-    qnorm(&b, ckadd(-ip[1], -sq), ckmul(2, ip[2]));
-    add_root(a.n, a.d, mult);
-    add_root(b.n, b.d, mult);
+    for (sg = 1; sg >= -1; sg -= 2) {
+        qnorm(&a, ckadd(-ip[1], sg * sq), ckmul(2, ip[2]));
+        add_root(a.n, a.d, mult);
+    }
     step("the discriminant is a perfect square, so the roots are rational");
     ideg = 0;
     ip[0] = 1;
@@ -2484,18 +2499,19 @@ static int rational_quadratic(int mult)
    into two, numerically otherwise */
 static void leftover(int v)
 {
-    int nf = sqfree(), i, at;
+    int nf = sqfree(), i;
+    Q *f = fac;
     if (nf < 1 || (nf == 1 && fmul[0] == 1)) {
-        if (!rational_quadratic(1)) exact_or_numeric(v, 1);
+        exact_or_numeric(v, 1);
         return;
     }
     step("some factors repeat, so solve each once");
-    for (at = 0, i = 0; i < nf; at += fdeg[i++] + 1) {
-        toip(fac + at, fdeg[i]);
+    for (i = 0; i < nf; f += fdeg[i++] + 1) {
+        toip(f, fdeg[i]);
         say(L_STEP | OPEN, "(");
         wip(v);
         say(MORE, ")^%d", fmul[i]);
-        if (!rational_quadratic(fmul[i])) exact_or_numeric(v, fmul[i]);
+        exact_or_numeric(v, fmul[i]);
     }
 }
 
@@ -2508,24 +2524,22 @@ static void analyze(const Poly *p, int v)
     uint8_t m[NV];
     nroots = nbq = nz = nquads = 0;
     nest4[4] = 0;
-    rset(&dkerr, 0);
+    rseti(&dkerr, 0);
     r = gcf(p, &k, m);
     if (m[v]) {
         add_root(0, 1, m[v]);
-        say(L_STEP | OPEN, "%c", vars[v]);
-        if (m[v] > 1) {
-            say(MORE | OPEN, "^%d", m[v]);
-        }
+        say(L_STEP | OPEN, m[v] > 1 ? "%c^%d" : "%c", vars[v], m[v]);
         say(MORE, " factor gives %c=0", vars[v]);
     }
     ideg = intdense(r, v);
     pfree(r);
     if (ideg == 1) {
-        add_root(-ip[0], ip[1], 1);
+        int32_t n = -ip[0], d = ip[1];
+        add_root(n, d, 1);
         begin(L_STEP);
         wip(v);
         say(MORE | OPEN, "=0 gives %c=", vars[v]);
-        wfrac(-ip[0], ip[1]);
+        wfrac(n, d);
         end();
         ideg = 0;
     }
