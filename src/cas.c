@@ -2260,12 +2260,12 @@ static void numeric(int fmult)
         t = z[k];
         mult = zm[k];
         /* real roots first, then by real part */
-        for (j = k; j > 0 && ((cx = rzero(&z[j - 1].i) - rzero(&t.i)) ? cx < 0 : rlt(&t.r, &z[j - 1].r)); j--) {
-            z[j] = z[j - 1];
-            zm[j] = zm[j - 1];
+        for (zj = z + k, mj = zm + k; zj > z && ((cx = rzero(&zj[-1].i) - rzero(&t.i)) ? cx < 0 : rlt(&t.r, &zj[-1].r)); zj--, mj--) {
+            *zj = zj[-1];
+            *mj = mj[-1];
         }
-        z[j] = t;
-        zm[j] = mult;
+        *zj = t;
+        *mj = mult;
     }
     rten(&m, -3);
     if (!rlt(&dkerr, &m)) fail("too sensitive to solve numerically");
