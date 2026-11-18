@@ -311,18 +311,6 @@ static void insert(const char *t)
     cur += n;
 }
 
-/* 2nd math types =, and again right after cycles it through < > <= >= */
-static void relation(void)
-{
-    static const char cycle[] = { '=', '<', '>', G_LE[0], G_GE[0], '=', 0 };
-    const char *p;
-    if (cur && (p = strchr(cycle, in[cur - 1]))) {
-        in[cur - 1] = p[1];
-        return;
-    }
-    insert("=");
-}
-
 int main(void)
 {
     char ch[2] = { 0, 0 };
@@ -363,8 +351,12 @@ int main(void)
         }
         if (m == M_2ND) {
             if (k == sk_Mode) break;
+            /* 2nd math types =, and again right after cycles it through < > <= >= */
             if (k == sk_Math) {
-                relation();
+                static const char cycle[] = { '=', '<', '>', G_LE[0], G_GE[0], '=', 0 };
+                const char *p;
+                if (cur && (p = strchr(cycle, in[cur - 1]))) in[cur - 1] = p[1];
+                else insert("=");
                 continue;
             }
             if (k == sk_DecPnt) {
