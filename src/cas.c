@@ -1751,7 +1751,7 @@ static void find_roots(int v)
                 if (p / q > bound || gcd(p, q) != 1) continue;
                 for (sgn = 0; sgn < 2; sgn++, p = -p) {
                     Q r = { p, q }, m = { q, 1 }, b = { -p, 1 };
-                    if ((q == p ? p1 : p1 % (q - p)) || (q == -p ? pm1 : pm1 % (q + p))) continue;
+                    if ((q - p ? p1 % (q - p) : p1) || (q + p ? pm1 % (q + p) : pm1)) continue;
                     poll();
                     if (!try_root(p, q)) continue;
                     any = 1;
