@@ -953,7 +953,12 @@ static int isnum(Rat a, Q *q)
     return !a.d && isconst(a.n, q);
 }
 
-static Poly *divide_out(const Poly *a, const Poly *g, int v);
+static Poly *divide_out(const Poly *a, const Poly *g, int v)
+{
+    int na = todense(a, v, ga), ng = todense(g, v, gc);
+    ddiv(ga, na, gc, ng, gb);
+    return fromdense(gb, na - ng, v);
+}
 
 static void replace(Poly **slot, Poly *p)
 {
@@ -3039,15 +3044,12 @@ static void solve_results(int v)
 static void extraneous(Poly **n, int v)
 {
     Poly *g = 0;
-    int na, ng;
+    int na;
     if (!dom || domv != v || !(*n)->n) return;
     /* the gcd with dom, then with that factor until it no longer divides */
     while ((na = dgcd(todense(*n, v, ga), todense(g ? g : dom, v, gb))) > 0) {
         if (!g) g = fromdense(ga, na, v);
-        na = todense(*n, v, ga);
-        ng = todense(g, v, gc);
-        ddiv(ga, na, gc, ng, gb);
-        replace(n, fromdense(gb, na - ng, v));
+        replace(n, divide_out(*n, g, v));
     }
 }
 
