@@ -2569,57 +2569,44 @@ static void analyze(const Poly *p, int v)
 
 /* ---------- real points: zeros and excluded values on the number line ---------- */
 
-static char *sv_w, *sv_wend;
-
-static int sv_clipped;
-
+/* points are only collected between lines, and the next line's begin() resets w, so it isn't saved */
 static void pt_begin(void)
 {
-    sv_clipped = clipped;
-    sv_w = w;
-    sv_wend = wend;
     w = pstr + pstrlen;
     wend = pstr + sizeof pstr;
     *w = 0;
 }
 
-static const char *pt_end(void)
-{
-    const char *str = pstr + pstrlen;
-    pstrlen = w - pstr + 1;
-    w = sv_w;
-    wend = sv_wend;
-    clipped = sv_clipped;
-    return str;
-}
+static char ptag;
+static const Q noq;
 
-static int ptpri(char tag)
-{
-    return tag == 'd' ? 2 : tag == 'h';
-}
-
-static void addpt(const R *x, int32_t p, int32_t q, int mult, char tag, const char *str)
+/* x joins pts with what was written since pt_begin; q is its exact value, or noq */
+static void addpt(const R *x, const Q *q, int mult)
 {
     R d, tol;
+    Pt *p = pts;
+    const char *str = pstr + pstrlen;
     int i;
-    if (tag == 'h') mult = 0;
+    pstrlen = w - pstr + 1;
+    if (ptag == 'h') mult = 0;
     rtol(&tol, x, -9);
-    for (i = 0; i < npts; i++) {
-        xsub(&d, &pts[i].v, x);
+    for (i = npts; i; i--, p++) {
+        xsub(&d, &p->v, x);
         rabs(&d);
         if (rlt(&tol, &d)) continue;
-        pts[i].mult += mult;
-        if (ptpri(tag) > ptpri(pts[i].tag)) pts[i].tag = tag;
+        p->mult += mult;
+        /* a bottom zero beats a hole beats a top zero: 'd' < 'h' < 'n' */
+        if (ptag < p->tag) p->tag = ptag;
         return;
     }
     if (npts == MAXPTS) return;
-    pts[npts].v = *x;
-    pts[npts].p = p;
-    pts[npts].q = q;
-    pts[npts].mult = mult;
-    pts[npts].tag = tag;
-    pts[npts].s = str;
     npts++;
+    p->v = *x;
+    p->p = q->n;
+    p->q = q->d;
+    p->mult = mult;
+    p->tag = ptag;
+    p->s = str;
 }
 
 /* sqrt of |num + sg k sqrt r|/den */
@@ -2661,29 +2648,45 @@ static void wnest(int sg, const char *pre)
     wputc(')');
 }
 
-static void quadpts(int32_t a, int32_t b, int32_t c, int mult, char tag)
+/* the real zeros of quads[i], or past them of bqb x^2 - bqa; returns how many with multiplicity */
+static int quadpts(int i)
 {
-    int32_t num, k, r, den;
+    int32_t a, b = 0, c, num, k, r, den;
     R sq, x, t;
-    int sgn;
-    if (quad_parts(a, b, c, &num, &k, &r, &den)) return;
+    int sgn, mult;
+    if (i < nquads) {
+        a = quads[i].a;
+        b = quads[i].b;
+        c = quads[i].c;
+        mult = quads[i].mult;
+        if (disc(a, b, c) < 0) return 0;
+    } else {
+        i -= nquads;
+        a = bqb[i];
+        c = -bqa[i];
+        mult = bqmult;
+        if ((bqa[i] > 0) != (bqb[i] > 0) || !bqa[i]) return 0;
+    }
+    if (quad_parts(a, b, c, &num, &k, &r, &den)) return 2 * mult;
     rset(&sq, disc(a, b, c));
     xsqrt(&sq, &sq);
+    rset(&t, 2 * a);
     for (sgn = -1; sgn <= 1; sgn += 2) {
         rset(&x, -b);
         (sgn < 0 ? xsub : xadd)(&x, &x, &sq);
-        rset(&t, 2 * a);
         xdiv(&x, &x, &t);
         pt_begin();
         wradical(num, k, r, 0, den, a > 0 ? sgn : -sgn);
-        addpt(&x, 0, 0, mult, tag, pt_end());
+        addpt(&x, &noq, mult);
     }
+    return 2 * mult;
 }
 
 /* real roots from the last analyze() into pts; returns their total multiplicity */
 static int collect(char tag)
 {
     int i, total = 0;
+    ptag = tag;
     for (i = 0; i < nroots; i++) {
         Q x;
         R rx;
@@ -2691,34 +2694,26 @@ static int collect(char tag)
         rfrac(&rx, x.n, x.d);
         pt_begin();
         wq(&x);
-        addpt(&rx, x.n, x.d, roots[i].mult, tag, pt_end());
+        addpt(&rx, &x, roots[i].mult);
         total += roots[i].mult;
     }
-    for (i = 0; i < nquads; i++) {
-        if (disc(quads[i].a, quads[i].b, quads[i].c) < 0) continue;
-        quadpts(quads[i].a, quads[i].b, quads[i].c, quads[i].mult, tag);
-        total += 2 * quads[i].mult;
-    }
-    for (i = 0; i < nbq; i++) {
-        if ((bqa[i] > 0) != (bqb[i] > 0) || !bqa[i]) continue;
-        quadpts(bqb[i], 0, -bqa[i], bqmult, tag);
-        total += 2 * bqmult;
-    }
+    for (i = 0; i < nquads + nbq; i++) total += quadpts(i);
     for (i = 0; i < 4 && nest4[4]; i++) {
+        int sg = i < 2 ? 1 : -1;
         R x;
-        if (!nest4[i < 2 ? 5 : 6]) continue;
-        nest_val(i < 2 ? 1 : -1, &x);
+        if (!nest4[5 + i / 2]) continue;
+        nest_val(sg, &x);
         if (i & 1) x.sign ^= 0x80;
         pt_begin();
-        wnest(i < 2 ? 1 : -1, i & 1 ? "-" : "");
-        addpt(&x, 0, 0, nest4[4], tag, pt_end());
+        wnest(sg, i & 1 ? "-" : "");
+        addpt(&x, &noq, nest4[4]);
         total += nest4[4];
     }
     for (i = 0; i < nz; i++) {
         if (!rzero(&z[i].i)) continue;
         pt_begin();
         wreal(&z[i].r);
-        addpt(&z[i].r, 0, 0, zm[i], tag, pt_end());
+        addpt(&z[i].r, &noq, zm[i]);
         total += zm[i];
     }
     return total;
@@ -2726,11 +2721,12 @@ static int collect(char tag)
 
 static void sortpts(void)
 {
-    int i, j;
+    int i;
+    Pt t, *p;
     for (i = 1; i < npts; i++) {
-        Pt t = pts[i];
-        for (j = i; j > 0 && rlt(&t.v, &pts[j - 1].v); j--) pts[j] = pts[j - 1];
-        pts[j] = t;
+        t = pts[i];
+        for (p = &pts[i]; p > pts && rlt(&t.v, &p[-1].v); p--) *p = p[-1];
+        *p = t;
     }
 }
 
@@ -2742,59 +2738,64 @@ static int approxpts(void)
     return 0;
 }
 
-/* the zeros of dom as excluded points; quiet */
+/* the zeros of p as points, without steps */
+static void quiet_pts(const Poly *p, int v, char tag)
+{
+    quiet++;
+    analyze(p, v);
+    collect(tag);
+    quiet--;
+}
+
+/* the zeros of dom as excluded points */
 static void domain_pts(int v)
 {
-    if (!dom || domv != v) return;
-    quiet++;
-    analyze(dom, v);
-    collect('h');
-    quiet--;
+    if (dom && domv == v) quiet_pts(dom, v, 'h');
+}
+
+/* the points' strings, comma separated, ending the line */
+static void wpts(void)
+{
+    int i;
+    for (i = 0; i < npts; i++) say(MORE | OPEN, i ? ", %s" : "%s", pts[i].s);
+    end();
 }
 
 static void domain_line(void)
 {
-    int i;
     if (!dom || domv < 0) return;
     npts = pstrlen = 0;
     domain_pts(domv);
     if (!npts) return;
     sortpts();
-    say(L_RESULT | OPEN, "%c", vars[domv]);
-    wputs(" " G_NE " ");
-    for (i = 0; i < npts; i++) {
-        if (i) wputs(", ");
-        wputs(pts[i].s);
-    }
-    end();
+    say(L_RESULT | OPEN, "%c " G_NE " ", vars[domv]);
+    wpts();
 }
 
 /* ---------- commands ---------- */
 
-static void wres(const char *prefix, Rat r)
+static void wres(const Rat *r)
 {
-    say(L_RESULT, "%s%r", prefix, r);
+    say(L_RESULT, "= %r", *r);
 }
 
 /* n/d with deg n >= deg d as quotient + remainder/d, with the division steps */
-static void mixed(Rat r, int v)
+static void mixed(const Poly *n, const Poly *d, int v)
 {
-    int dn = todense(r.n, v, da), dd = todense(r.d, v, db), rd;
+    int dn = todense(n, v, da), dd = todense(d, v, db), rd;
     Poly *q, *rem;
     if (dn < dd) return;
     if (dd == 1 && qone(&db[1])) {
-        Q root = db[0];
-        root.n = -root.n;
+        db[0].n = -db[0].n;
         say(L_STEP | OPEN, "synthetic division by ");
-        wlinear(v, &root);
+        wlinear(v, &db[0]);
         end();
-        synthetic(&da[0], da, dn, &root, dq);
-        rd = da[0].n ? 0 : -1;
+        synthetic(&da[0], da, dn, &db[0], dq);
     } else {
-        say(L_STEP, "long division by %p", r.d);
+        say(L_STEP, "long division by %p", d);
         longdiv(da, dn, db, dd, v, dq);
-        for (rd = dd - 1; rd >= 0 && !da[rd].n; rd--);
     }
+    for (rd = dd - 1; rd >= 0 && !da[rd].n; rd--);
     q = fromdense(dq, dn - dd, v);
     rem = fromdense(da, rd, v);
     say(L_RESULT | OPEN, "= %p", q);
@@ -2803,8 +2804,8 @@ static void mixed(Rat r, int v)
     } else {
         say(MORE | OPEN, "+(%p)", rem);
     }
-    wputs("/");
-    wpar(r.d);
+    wputc('/');
+    wpar(d);
     end();
     say(L_RESULT, "quotient %p, remainder %p", q, rem);
     pfree(q);
@@ -2814,20 +2815,18 @@ static void mixed(Rat r, int v)
 static int ratvar(Rat r)
 {
     int v = univar(r.n), vd = r.d ? univar(r.d) : -1;
-    if (v == -2 || vd == -2 || (v >= 0 && vd >= 0 && v != vd)) return -2;
-    return v >= 0 ? v : vd;
+    /* -2 when either has several letters or they have different ones */
+    return vd == -1 || vd == v ? v : v == -1 ? vd : -2;
 }
 
-static Rat compose(Rat r)
+static void compose(Rat *r)
 {
-    Rat t;
-    if (!exprvals()) return r;
+    if (!exprvals()) return;
     say(L_STEP | OPEN, "substitute ");
     wvalues();
     end();
-    t = rsubst(r);
+    *r = rsubst(*r);
     memset(assigned, 0, sizeof assigned);
-    return t;
 }
 
 static void check_domain(void)
@@ -2840,15 +2839,23 @@ static void check_domain(void)
     die();
 }
 
+/* r with the typed values plugged in */
+static void at_values(const Rat *r)
+{
+    say(L_RESULT | OPEN, "at ");
+    wvalues();
+    say(MORE, ": %r", rsubst(*r));
+}
+
 static void do_expand(Rat r)
 {
     int v;
-    r = compose(r);
+    compose(&r);
     if (nassigned()) {
         check_domain();
         v = univar(r.n);
         say(L_STEP, "P = %r", r);
-        if (!r.d && v >= 0 && v != iv && assigned[v] && nassigned() == 1 && pdeg(r.n, v) >= 1 && pdeg(r.n, v) <= MAXD) {
+        if (!r.d && v >= 0 && v != iv && assigned[v] && nassigned() == 1 && (unsigned)(pdeg(r.n, v) - 1) < MAXD) {
             int deg = todense(r.n, v, da);
             Q x;
             isnum(val[v], &x);
@@ -2861,55 +2868,54 @@ static void do_expand(Rat r)
             wvalues();
             end();
         }
-        wres("= ", rsubst(r));
+        r = rsubst(r);
+        wres(&r);
         return;
     }
-    wres("= ", r);
+    wres(&r);
     v = ratvar(r);
-    if (r.d && v >= 0 && v != iv && !typed_mixed) mixed(r, v);
+    if (r.d && v >= 0 && v != iv && !typed_mixed) mixed(r.n, r.d, v);
     domain_line();
 }
 
-static int32_t lf[2 * MAXD + 2];
-static int nlf, lfd[MAXD], lfm[MAXD];
+/* which square-free parts factor_into leaves as they are */
+static char lfx[MAXD];
 
-static int lfat(int k)
+static void wpow(int m)
 {
-    int i, at = 0;
-    for (i = 0; i < k; i++) at += lfd[i] + 1;
-    return at;
+    if (m > 1) say(MORE | OPEN, "^%d", m);
 }
 
 /* the factored form of p, with steps, into buf */
-static void factor_into(const Poly *p, char *buf, int cap)
+static void factor_into(const Poly *p, char *buf)
 {
     Poly *r;
     Q k;
     uint8_t m[NV];
-    int v, i, pieces, paren, hasmono;
-    char *sw, *se;
+    int v, i, pieces, paren, nf = 0, nlf = 0, at;
+    const char *op, *cp;
     r = gcf(p, &k, m);
     v = hasi(r) ? -2 : univar(r);
     nroots = nbq = nquads = 0;
     ideg = 0;
-    nlf = 0;
     if (v >= 0) {
         ideg = intdense(r, v);
         find_roots(v);
         if (!rational_quadratic(1) && !biquad(v) && !quartic_split(v) && ideg >= 3) {
-            int nf = sqfree(), j, at;
-            if (nf > 1 || (nf == 1 && fmul[0] > 1)) {
+            i = sqfree();
+            if (i > 1 || (i == 1 && fmul[0] > 1)) {
+                nf = i;
                 step("some factors repeat");
-                for (at = 0, j = 0; j < nf; at += fdeg[j++] + 1) {
-                    toip(fac + at, fdeg[j]);
+                for (at = 0, i = 0; i < nf; at += fdeg[i++] + 1) {
+                    toip(fac + at, fdeg[i]);
+                    lfx[i] = 0;
                     if (ideg == 4 && quartic_split(v)) {
-                        quads[nquads - 1].mult = quads[nquads - 2].mult = fmul[j];
+                        quads[nquads - 1].mult = quads[nquads - 2].mult = fmul[i];
                     } else if (ideg == 2) {
-                        addquad(ip[2], ip[1], ip[0], fmul[j]);
+                        addquad(ip[2], ip[1], ip[0], fmul[i]);
                     } else {
-                        memcpy(lf + lfat(nlf), ip, (ideg + 1) * sizeof(int32_t));
-                        lfd[nlf] = ideg;
-                        lfm[nlf++] = fmul[j];
+                        lfx[i] = 1;
+                        nlf++;
                     }
                 }
                 ideg = 0;
@@ -2917,59 +2923,42 @@ static void factor_into(const Poly *p, char *buf, int cap)
         }
     }
     pieces = nroots + nbq + nquads + nlf + (ideg >= 1) + (v == -2);
-    hasmono = hasvars(m) || !qone(&k);
-    paren = pieces > 1 || hasmono;
+    paren = pieces > 1 || hasvars(m) || !qone(&k);
     for (i = 0; i < nroots; i++) paren |= roots[i].mult > 1;
-    sw = w;
-    se = wend;
+    op = paren ? "(" : "";
+    cp = paren ? ")" : "";
+    /* do_factor begins its next line after this, which resets w */
     w = buf;
-    wend = buf + cap;
+    wend = buf + 400;
     *w = 0;
-    if (!pieces || hasvars(m) || (k.d == 1 && k.n != 1 && k.n != -1)) {
-        wmono(&k, m, 1);
-    } else if (k.n == -1 && k.d == 1) {
-        wputc('-');
-    } else if (k.d != 1) {
-        say(MORE | OPEN, "(%q)", &k);
-    }
+    if (!pieces || hasvars(m)) wmono(&k, m, 1);
+    else say(MORE | OPEN, k.d == 1 ? "%M" : "(%q)", &k);
     for (i = 0; i < nroots; i++) {
-        if (paren) wputc('(');
+        wputs(op);
         wlinfactor(roots[i].p, roots[i].q, v);
-        if (paren) wputc(')');
-        if (roots[i].mult > 1) {
-            say(MORE | OPEN, "^%d", roots[i].mult);
-        }
+        wputs(cp);
+        wpow(roots[i].mult);
     }
     for (i = 0; i < nbq; i++) wbq(i, v);
     for (i = 0; i < nquads; i++) {
         wquad(quads[i].a, quads[i].b, quads[i].c, v);
-        if (quads[i].mult > 1) {
-            say(MORE | OPEN, "^%d", quads[i].mult);
-        }
+        wpow(quads[i].mult);
     }
-    for (i = 0; i < nlf; i++) {
-        memcpy(ip, lf + lfat(i), (lfd[i] + 1) * sizeof(int32_t));
-        ideg = lfd[i];
+    for (at = 0, i = 0; i < nf; at += fdeg[i++] + 1) {
+        if (!lfx[i]) continue;
+        toip(fac + at, fdeg[i]);
         wputc('(');
         wip(v);
         wputc(')');
-        if (lfm[i] > 1) {
-            say(MORE | OPEN, "^%d", lfm[i]);
-        }
+        wpow(fmul[i]);
         ideg = 0;
     }
-    if (ideg >= 1) {
-        if (paren) wputc('(');
-        wip(v);
-        if (paren) wputc(')');
+    if (ideg >= 1 || v == -2) {
+        wputs(op);
+        if (v == -2) wpoly(r);
+        else wip(v);
+        wputs(cp);
     }
-    if (v == -2) {
-        if (paren) wputc('(');
-        wpoly(r);
-        if (paren) wputc(')');
-    }
-    w = sw;
-    wend = se;
     pfree(r);
 }
 
@@ -3002,16 +2991,16 @@ static void do_factor(Rat r)
     Q q;
     int i, has = 0;
     for (i = 0; i < NV; i++) has |= assigned[i] && isnum(val[i], &q);
-    r = compose(r);
+    compose(&r);
     if (!r.n->n) {
-        wres("= ", r);
+        wres(&r);
         return;
     }
     if (r.d) step("top:");
-    factor_into(r.n, top, sizeof top);
+    factor_into(r.n, top);
     if (r.d) {
         step("bottom:");
-        factor_into(r.d, bot, sizeof bot);
+        factor_into(r.d, bot);
     }
     say(L_RESULT | OPEN, "= ");
     if (r.d) {
@@ -3024,26 +3013,25 @@ static void do_factor(Rat r)
     end();
     if (has) {
         check_domain();
-        say(L_RESULT | OPEN, "at ");
-        wvalues();
-        say(MORE, ": %r", rsubst(r));
+        at_values(&r);
     }
     domain_line();
 }
 
-static int rootcmp(const Root *a, const Root *b)
+static int rootgt(const Root *a, const Root *b)
 {
     int32_t x = ckmul(a->p, b->q), y = ckmul(b->p, a->q);
-    return x < y ? -1 : x > y;
+    return x > y;
 }
 
 static void solve_results(int v)
 {
-    int i, j;
+    int i;
+    Root t, *p;
     for (i = 1; i < nroots; i++) {
-        Root t = roots[i];
-        for (j = i; j > 0 && rootcmp(&roots[j - 1], &t) > 0; j--) roots[j] = roots[j - 1];
-        roots[j] = t;
+        t = roots[i];
+        for (p = &roots[i]; p > roots && rootgt(&p[-1], &t); p--) *p = p[-1];
+        *p = t;
     }
     for (i = 0; i < nroots; i++) {
         say(L_RESULT | OPEN, "%c = ", vars[v]);
@@ -3067,149 +3055,95 @@ static void solve_results(int v)
     numeric_result(v);
 }
 
-static Poly *divide_out(const Poly *a, const Poly *g, int v)
+/* takes out of n the part whose zeros also zero an original denominator: those are extraneous */
+static void extraneous(Poly **n, int v)
 {
-    int na = todense(a, v, ga), ng = todense(g, v, gc);
-    ddiv(ga, na, gc, ng, gb);
-    return fromdense(gb, na - ng, v);
-}
-
-/* the part of n whose zeros also zero an original denominator: those are extraneous */
-static Poly *extraneous(Poly **n, int v)
-{
-    Poly *g, *t;
-    int k;
-    if (!dom || domv != v || !(*n)->n) return 0;
-    k = dgcd(todense(*n, v, ga), todense(dom, v, gb));
-    if (k <= 0) return 0;
-    g = fromdense(ga, k, v);
-    for (;;) {
-        t = divide_out(*n, g, v);
-        replace(n, t);
-        k = dgcd(todense(*n, v, ga), todense(g, v, gb));
-        if (k <= 0) break;
+    Poly *g = 0;
+    int na, ng;
+    if (!dom || domv != v || !(*n)->n) return;
+    /* the gcd with dom, then with that factor until it no longer divides */
+    while ((na = dgcd(todense(*n, v, ga), todense(g ? g : dom, v, gb))) > 0) {
+        if (!g) g = fromdense(ga, na, v);
+        na = todense(*n, v, ga);
+        ng = todense(g, v, gc);
+        ddiv(ga, na, gc, ng, gb);
+        replace(n, fromdense(gb, na - ng, v));
     }
-    return g;
 }
 
-static const char *relname(int rel)
+static int lead_neg(const Poly *p)
 {
-    return rel == '<' ? "<" : rel == '>' ? ">" : rel == 'L' ? G_LE : rel == 'G' ? G_GE : "=";
+    return p && p->n && p->t[0].c.n < 0;
 }
 
-static int lead_sign(const Poly *p)
+static const char *bound(int i)
 {
-    return p && p->n ? (p->t[0].c.n > 0 ? 1 : -1) : 1;
+    return i < 0 ? "-" G_INF : i >= npts ? G_INF : pts[i].s;
 }
 
-static void wbound(int i)
+static void inequality(const Rat *r, int v, int rel)
 {
-    wputs(i < 0 ? "-" G_INF : i >= npts ? G_INF : pts[i].s);
-}
-
-static void inequality(Rat r, int v, int rel)
-{
-    static signed char sign[MAXPTS + 1];
-    static char inc[2 * MAXPTS + 1];
-    int i, k, strict = rel == '<' || rel == '>', want = rel == '>' || rel == 'G' ? 1 : -1, any = 0, n;
-    say(L_STEP, "move everything to one side: %r%s0", r, relname(rel));
-    if (!r.n->n) {
-        begin(L_RESULT);
-        wputs(strict ? "no solution" : "all real numbers");
-        end();
+    static char pos[MAXPTS + 1];
+    static char inc[2 * MAXPTS + 2];
+    int i, k, strict = rel == '<' || rel == '>', up = rel == '>' || rel == 'G', any, n, pass;
+    say(L_STEP, "move everything to one side: %r%c0", *r, rel == 'L' ? G_LE[0] : rel == 'G' ? G_GE[0] : rel);
+    if (!r->n->n) {
+        say(L_RESULT, strict ? "no solution" : "all real numbers");
         return;
     }
     npts = pstrlen = 0;
-    if (v >= 0 && pdeg(r.n, v) >= 1) {
-        analyze(r.n, v);
+    if (v >= 0 && pdeg(r->n, v) >= 1) {
+        analyze(r->n, v);
         collect('n');
     }
-    if (r.d) {
-        quiet++;
-        analyze(r.d, v);
-        collect('d');
-        quiet--;
-    }
+    if (r->d) quiet_pts(r->d, v, 'd');
     domain_pts(v);
     sortpts();
     n = npts;
     if (n) {
         say(L_STEP | OPEN, "critical points: ");
-        for (i = 0; i < n; i++) {
-            if (i) wputs(", ");
-            wputs(pts[i].s);
-        }
-        end();
+        wpts();
     }
-    /* sign right of the last point from the leading coefficients, then flip across odd multiplicities */
-    sign[n] = lead_sign(r.n) * lead_sign(r.d);
-    for (i = n - 1; i >= 0; i--) sign[i] = pts[i].mult & 1 ? -sign[i + 1] : sign[i + 1];
+    /* positive right of the last point from the leading coefficients, then flip across odd multiplicities */
+    pos[n] = lead_neg(r->n) == lead_neg(r->d);
+    for (i = n - 1; i >= 0; i--) pos[i] = pos[i + 1] ^ (pts[i].mult & 1);
+    /* inc 0..2n alternates interval, point, interval... */
     for (i = 0; i <= n; i++) {
-        say(L_STEP | OPEN, "(");
-        wbound(i - 1);
-        wputc(',');
-        wbound(i);
-        say(MORE, "): %c", sign[i] > 0 ? '+' : '-');
+        say(L_STEP, "(%s,%s): %c", bound(i - 1), bound(i), pos[i] ? '+' : '-');
+        inc[2 * i] = pos[i] == up;
+        inc[2 * i + 1] = i < n && !strict && pts[i].tag == 'n';
     }
-    /* elements 0..2n alternate interval, point, interval... */
-    for (k = 0; k <= 2 * n; k++) inc[k] = k & 1 ? !strict && pts[k / 2].tag == 'n' : sign[k / 2] == want;
-    begin(L_RESULT);
-    for (k = 0; k <= 2 * n;) {
-        int a, b;
-        if (!inc[k]) {
-            k++;
-            continue;
-        }
-        for (a = k; k <= 2 * n && inc[k]; k++);
-        b = k - 1;
-        if (any) wputs(" " G_CUP " ");
-        any = 1;
-        if (a == b && (a & 1)) {
-            say(MORE | OPEN, "{%s}", pts[a / 2].s);
-            continue;
-        }
-        wputc(a & 1 ? '[' : '(');
-        wbound(a & 1 ? a / 2 : a / 2 - 1);
-        wputc(',');
-        wbound(b / 2);
-        wputc(b & 1 ? ']' : ')');
-    }
-    if (!any) wputs("no solution");
-    end();
-    if (any) {
+    /* interval notation, then the same runs as inequalities */
+    for (any = 1, pass = 0; any && pass < 2; pass++) {
         begin(L_RESULT);
         for (any = 0, k = 0; k <= 2 * n;) {
-            int a, b, lo, hi;
+            int a, b;
+            const char *lo, *hi;
             if (!inc[k]) {
                 k++;
                 continue;
             }
             for (a = k; k <= 2 * n && inc[k]; k++);
             b = k - 1;
-            if (any) wputs(" or ");
+            if (any) wputs(pass ? " or " : " " G_CUP " ");
             any = 1;
-            lo = a == 0;
-            hi = b == 2 * n;
-            if (lo && hi) {
-                wputs("all real numbers");
-                continue;
-            }
+            lo = bound((a - 1) >> 1);
+            hi = bound(b >> 1);
             if (a == b && (a & 1)) {
-                say(MORE | OPEN, "%c = %s", vars[v], pts[a / 2].s);
-                continue;
-            }
-            if (hi) {
-                say(MORE | OPEN, "%c%s%s", vars[v], a & 1 ? G_GE : ">", pts[(a - 1) / 2].s);
-                continue;
-            }
-            if (!lo) {
-                say(MORE | OPEN, "%s%s", pts[(a - 1) / 2].s, a & 1 ? G_LE : "<");
-            }
-            wputc(vars[v]);
-            if (!hi) {
-                say(MORE | OPEN, "%s%s", b & 1 ? G_LE : "<", pts[b / 2].s);
+                /* a lone point: {p}, or x = p */
+                say(MORE | OPEN, pass ? "%c = %s" : "%c%s}", pass ? vars[v] : '{', hi);
+            } else if (!pass) {
+                say(MORE | OPEN, "%c%s,%s%c", a & 1 ? '[' : '(', lo, hi, b & 1 ? ']' : ')');
+            } else if (!a && b == 2 * n) {
+                wputs("all real numbers");
+            } else {
+                if (a && b < 2 * n) say(MORE | OPEN, "%s%c", lo, a & 1 ? G_LE[0] : '<');
+                wputc(vars[v]);
+                if (b == 2 * n) say(MORE | OPEN, "%c%s", a & 1 ? G_GE[0] : '>', lo);
+                else say(MORE | OPEN, "%c%s", b & 1 ? G_LE[0] : '<', hi);
             }
         }
+        if (!any) wputs("no solution");
         end();
     }
     if (approxpts()) step("decimal endpoints are rounded");
@@ -3217,14 +3151,14 @@ static void inequality(Rat r, int v, int rel)
 
 static void do_solve(Rat r, int rel)
 {
-    Poly *n, *g;
+    Poly *n;
     int v, i;
     if (hasi(r.n) || (r.d && hasi(r.d))) fail("solve needs real coefficients");
     v = ratvar(r);
     if (v == -2) fail("solve needs one variable");
     if (v < 0 && domv >= 0) v = domv;
     if (rel != '=') {
-        inequality(r, v, rel);
+        inequality(&r, v, rel);
         return;
     }
     n = r.n;
@@ -3233,13 +3167,9 @@ static void do_solve(Rat r, int rel)
         wpar(r.d);
         say(MORE, ": %p=0", n);
     }
-    g = v >= 0 ? extraneous(&n, v) : 0;
-    (void)g;
-    npts = pstrlen = 0;
+    if (v >= 0) extraneous(&n, v);
     if (v < 0 || pdeg(n, v) < 1) {
-        begin(L_RESULT);
-        wputs(n->n ? "no solution" : "every value works");
-        end();
+        say(L_RESULT, n->n ? "no solution" : "every value works");
         if (!n->n) domain_line();
     } else {
         analyze(n, v);
@@ -3249,12 +3179,7 @@ static void do_solve(Rat r, int rel)
     npts = pstrlen = 0;
     if (v >= 0) {
         domain_pts(v);
-        if (r.d) {
-            quiet++;
-            analyze(r.d, v);
-            collect('d');
-            quiet--;
-        }
+        if (r.d) quiet_pts(r.d, v, 'd');
     }
     sortpts();
     for (i = 0; i < npts; i++) {
@@ -3263,110 +3188,87 @@ static void do_solve(Rat r, int rel)
     }
 }
 
-/* "= ..." for d/dx, "d/dy = ..." when the letter isn't x */
-/* sq set prints top/(sq)^2 instead of q */
-static void wderiv(int v, Rat q, const Poly *top, const Poly *sq)
+/* the first letter other than i in p's terms, or only want when want >= 0 */
+static int firstvar(const Poly *p, int want)
 {
-    begin(L_RESULT);
-    if (vars[v] != 'x') {
-        say(MORE | OPEN, "d/d%c ", vars[v]);
-    }
-    if (sq) say(MORE, top->n > 1 ? "= (%p)/(%p)^2" : "= %p/(%p)^2", top, sq);
-    else say(MORE, "= %r", q);
+    int i, k;
+    for (i = 0; p && i < p->n; i++)
+        for (k = 0; k < NV; k++)
+            if (k != iv && p->t[i].e[k] && (want < 0 || k == want)) return k;
+    return -1;
 }
 
 static void do_deriv(Rat r)
 {
-    Poly *dn, *dd;
+    Poly *top = 0;
+    Rat q;
     uint8_t e[NV];
-    int i, v = -1, x = varidx('x');
+    int i, v = -1, x = varidx('x'), sq = 0;
+    const char *f = 0;
     if (exprvals()) fail("d/dx values must be numbers");
-    for (i = 0; i < r.n->n; i++)
-        if (vars[x] == 'x' && x != iv && r.n->t[i].e[x]) v = x;
-    for (i = 0; r.d && i < r.d->n; i++)
-        if (vars[x] == 'x' && x != iv && r.d->t[i].e[x]) v = x;
-    for (i = 0; v < 0 && i < r.n->n; i++) {
-        int k;
-        for (k = 0; k < NV; k++)
-            if (k != iv && r.n->t[i].e[k]) {
-                v = k;
-                break;
-            }
-    }
-    for (i = 0; v < 0 && r.d && i < r.d->n; i++) {
-        int k;
-        for (k = 0; k < NV; k++)
-            if (k != iv && r.d->t[i].e[k]) {
-                v = k;
-                break;
-            }
-    }
+    if (vars[x] != 'x') x = NV;
+    /* x when it's there, in the top then the bottom, else the first letter */
+    for (i = 0; v < 0 && i < 4; i++) v = firstvar(i & 1 ? r.d : r.n, i < 2 ? x : -1);
     if (v < 0) {
         step("no variable, so the slope is 0");
-        wres("= ", rpoly(pnew()));
+        q = rpoly(pnew());
+        wres(&q);
         return;
     }
     if (r.d) {
-        Rat q;
-        Poly *top;
-        int sq;
+        Poly *a, *b, *dn, *dd;
         dn = pderiv(r.n, v);
         dd = pderiv(r.d, v);
-        begin(L_STEP);
-        wputs("quotient rule: (top'" G_DOT "bottom-top" G_DOT "bottom')/bottom^2");
-        end();
+        step("quotient rule: (top'" G_DOT "bottom-top" G_DOT "bottom')/bottom^2");
         say(L_STEP, "top' = %p, bottom' = %p", dn, dd);
         say(L_STEP, "= ((%p)(%p)-(%p)(%p))/(%p)^2", dn, r.d, r.n, dd, r.d);
-        {
-            Poly *a = pmul(dn, r.d), *b = pmul(r.n, dd);
-            top = padd(a, b, 1);
-            q.n = pcopy(top);
-            q.d = pmul(r.d, r.d);
-            pfree(a);
-            pfree(b);
-        }
+        a = pmul(dn, r.d);
+        b = pmul(r.n, dd);
+        top = padd(a, b, 1);
+        q.n = pcopy(top);
+        q.d = pmul(r.d, r.d);
+        pfree(a);
+        pfree(b);
         rsimp(&q);
+        f = top->n > 1 ? "= (%p)/(%p)^2" : "= %p/(%p)^2";
         /* nothing cancelled keeps the bottom squared the way it's written by hand */
         sq = r.d->n > 1 && q.d && pdeg(q.d, v) == 2 * pdeg(r.d, v);
         if (!sq) {
-            say(L_STEP, top->n > 1 ? "= (%p)/(%p)^2, then cancel" : "= %p/(%p)^2, then cancel", top, r.d);
+            say(L_STEP | OPEN, f, top, r.d);
+            say(MORE, ", then cancel");
         }
-        wderiv(v, q, top, sq ? r.d : 0);
-        if (nassigned()) {
-            check_domain();
-            say(L_RESULT | OPEN, "at ");
-            wvalues();
-            say(MORE, ": %r", rsubst(q));
-        }
-        return;
-    }
-    step("power rule, term by term");
-    for (i = 0; i < r.n->n; i++) {
-        const Term *t = &r.n->t[i];
-        int k = t->e[v];
-        Q c;
-        qset(&c, k);
-        qmul(&c, &c, &t->c);
-        memcpy(e, t->e, NV);
-        if (k) e[v] = k - 1;
-        say(L_STEP | OPEN, "d/d%c ", vars[v]);
-        wmono(&t->c, t->e, 1);
-        wputs(" = ");
-        if (k > 1 && !qone(&t->c)) {
-            say(MORE | OPEN, "%d" G_DOT "%Q", k, &t->c);
-            wvars(e);
+    } else {
+        step("power rule, term by term");
+        for (i = 0; i < r.n->n; i++) {
+            const Term *t = &r.n->t[i];
+            int k = t->e[v];
+            Q c;
+            qset(&c, k);
+            qmul(&c, &c, &t->c);
+            memcpy(e, t->e, NV);
+            if (k) e[v] = k - 1;
+            say(L_STEP | OPEN, "d/d%c ", vars[v]);
+            wmono(&t->c, t->e, 1);
             wputs(" = ");
+            if (k > 1 && !qone(&t->c)) {
+                say(MORE | OPEN, "%d" G_DOT "%Q", k, &t->c);
+                wvars(e);
+                wputs(" = ");
+            }
+            if (k) wmono(&c, e, 1);
+            else wputc('0');
+            end();
         }
-        if (k) wmono(&c, e, 1);
-        else wputc('0');
-        end();
+        q = rpoly(pderiv(r.n, v));
     }
-    dn = pderiv(r.n, v);
-    wderiv(v, rpoly(dn), 0, 0);
+    /* "= ..." for d/dx, "d/dy = ..." when the letter isn't x */
+    begin(L_RESULT);
+    if (vars[v] != 'x') say(MORE | OPEN, "d/d%c ", vars[v]);
+    if (sq) say(MORE, f, top, r.d);
+    else say(MORE, "= %r", q);
     if (nassigned()) {
-        say(L_RESULT | OPEN, "at ");
-        wvalues();
-        say(MORE, ": %r", rsubst(rpoly(dn)));
+        if (r.d) check_domain();
+        at_values(&q);
     }
 }
 
@@ -3397,61 +3299,49 @@ static void vertex_of(const Q *a, const Q *b, const Q *c, Q *h, Q *k)
 /* a(x-h)^2+k */
 static void wvertex(const Q *a, const Q *h, const Q *k, int ch)
 {
-    uint8_t e[NV] = { 0 };
+    static const Q one = { 1, 1 };
+    static const uint8_t e[NV];
     Q t = *h;
     t.n = -t.n;
     if (a->n == -1 && a->d == 1) wputc('-');
     else if (!qone(a)) wqpar(a);
-    if (h->n) {
-        say(MORE | OPEN, "(%c", ch);
-        wmono(&t, e, 0);
-        wputc(')');
-    } else {
-        wputc(ch);
-    }
-    wputs("^2");
+    say(MORE | OPEN, "%P^2", &one, ch, &t);
     if (k && k->n) wmono(k, e, 0);
 }
 
 static void do_vertex(Rat r)
 {
-    static Q a, b, c, h, k, t, u;
-    uint8_t e[NV] = { 0 };
-    int v = need_quadratic(r, &a, &b, &c);
+    static Q a, b, c, h, k, t, u, s;
+    static const uint8_t e[NV];
+    int v = need_quadratic(r, &a, &b, &c), ch;
     if (v < 0) fail("vertex form needs a quadratic like 2x^2+8x+3");
+    ch = vars[v];
     vertex_of(&a, &b, &c, &h, &k);
     qdiv(&t, &b, &a);
     if (!qone(&a)) {
-        say(L_STEP | OPEN, "factor %q out of the %c terms: %Q(%c^2", &a, vars[v], &a, vars[v]);
-        e[v] = 1;
-        wmono(&t, e, 0);
-        e[v] = 0;
-        wputc(')');
+        say(L_STEP | OPEN, "factor %q out of the %c terms: %Q(%c^2%T%c)", &a, ch, &a, ch, &t, ch);
         if (c.n) wmono(&c, e, 0);
         end();
     }
     /* half of b/a is -h */
     u = h;
     u.n = -u.n;
-    say(L_STEP | OPEN, "half of %q is %q, add and subtract %Q^2 = ", &t, &u, &u);
-    qmul(&t, &u, &u);
-    say(MORE, "%q", &t);
+    qmul(&s, &u, &u);
+    say(L_STEP, "half of %q is %q, add and subtract %Q^2 = %q", &t, &u, &u, &s);
     say(L_STEP | OPEN, "= ");
-    wvertex(&a, &h, 0, vars[v]);
+    wvertex(&a, &h, 0, ch);
     if (c.n || u.n) {
-        qmul(&t, &t, &a);
+        qmul(&t, &s, &a);
         t.n = -t.n;
         wmono(&t, e, 0);
         if (c.n) wmono(&c, e, 0);
     }
     end();
     say(L_RESULT | OPEN, "= ");
-    wvertex(&a, &h, &k, vars[v]);
+    wvertex(&a, &h, &k, ch);
     end();
     say(L_RESULT, "vertex (%q, %q)", &h, &k);
-    say(L_RESULT | OPEN, "axis %c = %q", vars[v], &h);
-    wputs(a.n > 0 ? ", opens up, min " : ", opens down, max ");
-    say(MORE, "%q", &k);
+    say(L_RESULT, "axis %c = %q, opens %s %q", ch, &h, a.n > 0 ? "up, min" : "down, max", &k);
 }
 
 __attribute__((noreturn)) static void one_var(const char *cmd)
