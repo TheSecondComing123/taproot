@@ -450,13 +450,14 @@ static void wmono(const Q *c, const uint8_t *e, int first)
 /* m ch + b, for the inverse steps where y is not one of the input's letters; par wraps two terms in () */
 static void wlin(const Q *m, int ch, const Q *b, int par)
 {
-    par = par && m->n && b->n;
+    int hm = m->n != 0, hb = b->n != 0;
+    par = par && hm && hb;
     if (par) wputc('(');
-    if (m->n) {
+    if (hm) {
         wcoef(m, 1, 1);
         wputc(ch);
     }
-    if (b->n || !m->n) wcoef(b, !m->n, 0);
+    if (hb || !hm) wcoef(b, !hm, 0);
     if (par) wputc(')');
 }
 
@@ -648,9 +649,9 @@ static Poly *pscale(const Poly *a, const Q *c)
 static Poly *conj(const Poly *a)
 {
     Poly *r = pcopy(a);
-    int i;
-    for (i = 0; i < r->n; i++)
-        if (r->t[i].e[iv]) r->t[i].c.n = -r->t[i].c.n;
+    Term *t;
+    for (t = r->t; t < r->t + r->n; t++)
+        if (t->e[iv]) t->c.n = -t->c.n;
     return r;
 }
 
@@ -1126,14 +1127,16 @@ static void wcross(const Poly *n, const Poly *d)
 static Rat radd(Rat a, Rat b, int neg, int shown)
 {
     Rat r;
-    Poly *x, *y;
-    if (pequal(a.d, b.d)) {
-        r.n = padd(a.n, b.n, neg);
-        r.d = dmul(a.d, 0);
-    } else {
+    Poly *x = a.n, *y = b.n;
+    int same = pequal(a.d, b.d);
+    if (!same) {
         x = dmul(a.n, b.d);
         y = dmul(b.n, a.d);
-        r.n = padd(x, y, neg);
+    }
+    r.n = padd(x, y, neg);
+    if (same) {
+        r.d = dmul(a.d, 0);
+    } else {
         pfree(x);
         pfree(y);
         r.d = dmul(a.d, b.d);
