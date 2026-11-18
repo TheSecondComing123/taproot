@@ -1627,11 +1627,8 @@ static void wip(int v)
 
 static void wlinfactor(int32_t p, int32_t q, int v)
 {
-    uint8_t e[NV] = { 0 };
-    e[v] = 1;
-    wmonoi(q, e, 1);
-    e[v] = 0;
-    if (p) wmonoi(-p, e, 0);
+    Q m = { q, 1 }, b = { -p, 1 };
+    wlin(&m, vars[v], &b, 0);
 }
 
 static void sortll(int32_t *a, int n)
