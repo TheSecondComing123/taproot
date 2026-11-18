@@ -1583,7 +1583,7 @@ static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
     const Term *t, *te = p->t + p->n;
     int32_t g = 0, l = 1;
     int v;
-    for (v = 0; v < NV; v++) m[v] = MAXE;
+    memset(m, MAXE, NV);
     for (t = p->t; t < te; t++) {
         g = gcd(g, t->c.n);
         l = lcm(l, t->c.d);
