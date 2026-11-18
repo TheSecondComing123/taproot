@@ -1273,10 +1273,8 @@ static int peek(void)
 
 static int varidx(int ch)
 {
-    int i;
-    for (i = 0; i < nv; i++)
-        if (vars[i] == ch) return i;
-    return 0;
+    const char *p = memchr(vars, ch, nv);
+    return p ? p - vars : 0;
 }
 
 static Rat pexpr(void);
@@ -1289,38 +1287,41 @@ static void deeper(void)
     if (++nest > 24) fail("too many nested ( or signs");
 }
 
+/* *a = *r, freeing the old *a and *b */
+static void rnext(Rat *a, Rat *b, const Rat *r)
+{
+    rfree(*a);
+    rfree(*b);
+    *a = *r;
+}
+
 static Rat patom(void)
 {
     int ch = peek();
     Rat r;
+    Q q;
     if (isdigit(ch) || ch == '.') {
         int32_t n = 0, d = 1;
-        int digits = 0;
-        while (s < send && isdigit((unsigned char)*s)) {
-            n = ckadd(ckmul(n, 10), *s++ - '0');
-            digits++;
-        }
-        if (s < send && *s == '.') {
-            s++;
-            while (s < send && isdigit((unsigned char)*s)) {
-                n = ckadd(ckmul(n, 10), *s++ - '0');
-                d = ckmul(d, 10);
+        int digits = 0, dot = 0;
+        for (; s < send; s++) {
+            if (isdigit((unsigned char)*s)) {
+                n = ckadd(ckmul(n, 10), *s - '0');
+                if (dot) d = ckmul(d, 10);
                 digits++;
+            } else if (*s == '.' && !dot) {
+                dot = 1;
+            } else {
+                break;
             }
         }
         if (!digits) fail("a lone . isn't a number");
         if (s < send && *s == '.') fail("a number has two decimal points");
-        {
-            Q q;
-            qnorm(&q, n, d);
-            return rpoly(pconst(&q));
-        }
-    }
-    if (isalpha(ch)) {
+        qnorm(&q, n, d);
+        r.n = pconst(&q);
+    } else if (isalpha(ch)) {
         s++;
-        return rpoly(pvar(varidx(tolower(ch))));
-    }
-    if (ch == '(') {
+        r.n = pvar(varidx(tolower(ch)));
+    } else if (ch == '(') {
         s++;
         deeper();
         r = pexpr();
@@ -1328,10 +1329,13 @@ static Rat patom(void)
         s++;
         nest--;
         return r;
+    } else {
+        if (!ch) fail("the expression ends too early");
+        if (ch == ')') fail("extra )");
+        unexpected(ch);
     }
-    if (!ch) fail("the expression ends too early");
-    if (ch == ')') fail("extra )");
-    unexpected(ch);
+    r.d = 0;
+    return r;
 }
 
 static Rat ppower(void)
@@ -1341,15 +1345,14 @@ static Rat ppower(void)
     if (peek() != '^') return b;
     s++;
     ex = punary();
-    if (!isnum(ex, &q) || q.d != 1) {
+    if (ex.d || !isconst(ex.n, &q) || q.d != 1) {
         say(L_ERROR | OPEN, "exponent must be a whole number (got %r)", ex);
         die();
     }
     if ((q.n > MAXPOW || q.n < -MAXPOW) && (b.d || b.n->n > 1 || q.n > MAXE || q.n < -MAXE)) fail("exponent too big (max 60)");
     r = rpow(b, (int)q.n);
-    rfree(b);
-    rfree(ex);
-    return r;
+    rnext(&b, &ex, &r);
+    return b;
 }
 
 static Rat punary(void)
@@ -1362,68 +1365,69 @@ static Rat punary(void)
     r = punary();
     nest--;
     if (ch == '-') {
-        Q m;
-        qset(&m, -1);
+        static const Q m = { -1, 1 };
         replace(&r.n, pscale(r.n, &m));
     }
     return r;
 }
 
-/* a product of two polynomials, one with several terms, gets its own step */
-static Rat rmul_shown(Rat a, Rat b)
+/* *a times or over *b, freeing both; a product of two polynomials, one with several terms, gets its own step */
+static void rmulby(Rat *a, Rat *b, int div)
 {
-    Rat r = rmul(a, b);
+    Rat r;
     Q c;
-    if (!a.d && !b.d && !isconst(a.n, &c) && !isconst(b.n, &c) && (a.n->n > 1 || b.n->n > 1)) {
-        say(L_STEP | OPEN, a.n->n > 1 ? "(%p)" : "%p", a.n);
-        say(MORE, "(%p) = %p", b.n, r.n);
+    if (div) {
+        r = rdiv(*a, *b);
+    } else {
+        r = rmul(*a, *b);
+        if (!a->d && !b->d && !isconst(a->n, &c) && !isconst(b->n, &c) && (a->n->n > 1 || b->n->n > 1)) {
+            say(L_STEP, a->n->n > 1 ? "(%p)(%p) = %p" : "%p(%p) = %p", a->n, b->n, r.n);
+        }
     }
-    return r;
+    rnext(a, b, &r);
 }
 
 static Rat pterm(void)
 {
-    Rat a = punary(), b, r;
+    Rat a = punary(), b;
     for (;;) {
         int ch = peek();
         if (ch == '*' || ch == '/') {
             s++;
             b = punary();
-            r = ch == '*' ? rmul_shown(a, b) : rdiv(a, b);
         } else if (isalnum(ch) || ch == '(' || ch == '.') {
             b = ppower();
-            r = rmul_shown(a, b);
         } else {
             return a;
         }
-        rfree(a);
-        rfree(b);
-        a = r;
+        rmulby(&a, &b, ch == '/');
     }
 }
 
-static int proper(Rat t)
+static int proper(const Rat *t)
 {
-    int v = ratvar(t);
-    return !t.d || (v >= 0 && pdeg(t.n, v) < pdeg(t.d, v));
+    int v = ratvar(*t);
+    return !t->d || (v >= 0 && pdeg(t->n, v) < pdeg(t->d, v));
 }
 
 static Rat pexpr(void)
 {
-    Rat a = pterm(), b, r;
-    int top = !nest, terms = 1, fracs = !!a.d, mixed_ok = proper(a);
+    Rat a, b, r;
+    int top = !nest, terms = 0, fracs = 0, mixed_ok = 1, ch = 0;
     for (;;) {
-        int ch = peek();
-        if (ch != '+' && ch != '-') break;
-        s++;
         b = pterm();
         terms++;
         fracs += !!b.d;
-        mixed_ok &= proper(b);
-        r = radd(a, b, ch == '-', 1);
-        rfree(a);
-        rfree(b);
-        a = r;
+        mixed_ok &= proper(&b);
+        if (!ch) {
+            a = b;
+        } else {
+            r = radd(a, b, ch == '-', 1);
+            rnext(&a, &b, &r);
+        }
+        ch = peek();
+        if (ch != '+' && ch != '-') break;
+        s++;
     }
     /* x+1/x is already quotient plus remainder; dividing it back out would just repeat it */
     if (top) typed_mixed = terms > 1 && fracs == 1 && mixed_ok;
@@ -1464,8 +1468,7 @@ static void parse_value(const char *start, const char *stop)
 static void addvar(int ch)
 {
     int i;
-    for (i = 0; i < nv; i++)
-        if (vars[i] == ch) return;
+    if (memchr(vars, ch, nv)) return;
     if (nv == NV) fail("too many letters (max 4)");
     for (i = nv++; i > 0 && vars[i - 1] > ch; i--) vars[i] = vars[i - 1];
     vars[i] = ch;
@@ -1485,7 +1488,7 @@ static int exprvals(void)
     Q q;
     int v;
     for (v = 0; v < NV; v++)
-        if (assigned[v] && !isnum(val[v], &q)) return 1;
+        if (assigned[v] && (val[v].d || !isconst(val[v].n, &q))) return 1;
     return 0;
 }
 
@@ -1505,27 +1508,26 @@ static Rat psubst(const Poly *p)
     Rat acc = rpoly(pnew()), t, u, pw;
     int i, v;
     for (i = 0; i < p->n; i++) {
-        Term tm = p->t[i];
+        const Term *pt = &p->t[i];
+        Term tm = *pt;
         Q zq;
-        int zero = 0;
-        for (v = 0; v < NV; v++) zero |= assigned[v] && tm.e[v] && isnum(val[v], &zq) && !zq.n;
-        if (zero) continue;
-        for (v = 0; v < NV; v++)
-            if (assigned[v]) tm.e[v] = 0;
-        t = rpoly(pnew());
+        for (v = 0; v < NV; v++) {
+            if (!assigned[v]) continue;
+            if (tm.e[v] && !val[v].d && isconst(val[v].n, &zq) && !zq.n) break;
+            tm.e[v] = 0;
+        }
+        if (v < NV) continue;
+        t.n = pnew();
+        t.d = 0;
         addterm(t.n, &tm.c, tm.e);
         for (v = 0; v < NV; v++) {
-            if (!assigned[v] || !p->t[i].e[v]) continue;
-            pw = rpow(val[v], p->t[i].e[v]);
+            if (!assigned[v] || !pt->e[v]) continue;
+            pw = rpow(val[v], pt->e[v]);
             u = rmul(t, pw);
-            rfree(t);
-            rfree(pw);
-            t = u;
+            rnext(&t, &pw, &u);
         }
         u = radd(acc, t, 0, 0);
-        rfree(acc);
-        rfree(t);
-        acc = u;
+        rnext(&acc, &t, &u);
     }
     return acc;
 }
@@ -1536,9 +1538,8 @@ static Rat rsubst(Rat r)
     if (!r.d) return n;
     d = psubst(r.d);
     q = rdiv(n, d);
-    rfree(n);
-    rfree(d);
-    return q;
+    rnext(&n, &d, &q);
+    return n;
 }
 
 /* ---------- roots of one-variable polynomials ---------- */
@@ -1564,26 +1565,26 @@ static char pstr[1024];
 static Poly *gcf(const Poly *p, Q *k, uint8_t *m)
 {
     Poly *r;
+    const Term *t, *te = p->t + p->n;
     int32_t g = 0, l = 1;
-    int i, v, show = 0;
-    for (v = 0; v < NV; v++) m[v] = MAXE;
-    for (i = 0; i < p->n; i++) {
-        g = gcd(g, p->t[i].c.n);
-        l = lcm(l, p->t[i].c.d);
+    int v;
+    memset(m, MAXE, NV);
+    for (t = p->t; t < te; t++) {
+        g = gcd(g, t->c.n);
+        l = lcm(l, t->c.d);
         for (v = 0; v < NV; v++)
-            if (p->t[i].e[v] < m[v]) m[v] = p->t[i].e[v];
+            if (t->e[v] < m[v]) m[v] = t->e[v];
     }
     qnorm(k, p->t[0].c.n < 0 ? -g : g, l);
     r = pnew();
-    for (i = 0; i < p->n; i++) {
+    for (t = p->t; t < te; t++) {
         uint8_t e[NV];
         Q c;
-        for (v = 0; v < NV; v++) e[v] = p->t[i].e[v] - m[v];
-        qdiv(&c, &p->t[i].c, k);
+        for (v = 0; v < NV; v++) e[v] = t->e[v] - m[v];
+        qdiv(&c, &t->c, k);
         addterm(r, &c, e);
     }
-    for (v = 0; v < NV; v++) show |= m[v];
-    if (r->n > 1 && (show || !qone(k))) {
+    if (r->n > 1 && (hasvars(m) || !qone(k))) {
         say(L_STEP | OPEN, "GCF ");
         wmono(k, m, 1);
         say(MORE, ": %p", r);
@@ -1602,7 +1603,8 @@ static void wip(int v)
 {
     int i;
     Poly *p;
-    for (i = 0; i <= ideg; i++) qset(&da[i], ip[i]);
+    Q *a = da;
+    for (i = 0; i <= ideg; i++) qset(a++, ip[i]);
     p = fromdense(da, ideg, v);
     wpoly(p);
     pfree(p);
@@ -1610,20 +1612,17 @@ static void wip(int v)
 
 static void wlinfactor(int32_t p, int32_t q, int v)
 {
-    uint8_t e[NV] = { 0 };
-    e[v] = 1;
-    wmonoi(q, e, 1);
-    e[v] = 0;
-    if (p) wmonoi(-p, e, 0);
+    Q m = { q, 1 }, b = { -p, 1 };
+    wlin(&m, vars[v], &b, 0);
 }
 
 static void sortll(int32_t *a, int n)
 {
-    int i, j;
-    for (i = 1; i < n; i++) {
-        int32_t t = a[i];
-        for (j = i; j > 0 && a[j - 1] > t; j--) a[j] = a[j - 1];
-        a[j] = t;
+    int32_t *p, *q;
+    for (p = a + 1; p < a + n; p++) {
+        int32_t t = *p;
+        for (q = p; q > a && q[-1] > t; q--) *q = q[-1];
+        *q = t;
     }
 }
 
@@ -1631,21 +1630,19 @@ static void sortll(int32_t *a, int n)
    ponytail: trial division, so a prime factor past ~10^10 still takes minutes on the calc (clear stops it) */
 static int divisors(int32_t n, int32_t *out)
 {
-    int32_t p, m;
-    int k = 1, i, base, e, tick = 0;
+    int32_t p, *o;
+    int k = 1, i, e, tick = 0;
     if (n < 0) n = -n;
     out[0] = 1;
     for (p = 2; n > 1; p += 1 + (p > 2)) {
         if (!(++tick & 4095)) poll();
         if (p > n / p) p = n;
-        if (n % p) continue;
         for (e = 0; n % p == 0; e++) n /= p;
+        if (!e) continue;
         if (k * (e + 1) > 256) return -1;
-        base = k;
-        for (m = 1; e--;) {
-            m *= p;
-            for (i = 0; i < base; i++) out[k++] = out[i] * m;
-        }
+        /* o[-k] is the same divisor with one p fewer */
+        for (i = k * e, o = out + k; i > 0; i--, o++) *o = o[-k] * p;
+        k *= e + 1;
     }
     sortll(out, k);
     return k;
@@ -1653,88 +1650,73 @@ static int divisors(int32_t n, int32_t *out)
 
 static void add_root(int32_t p, int32_t q, int mult)
 {
-    int i;
-    for (i = 0; i < nroots; i++) {
-        if (roots[i].p == p && roots[i].q == q) {
-            roots[i].mult += mult;
+    Root *r;
+    for (r = roots; r < roots + nroots; r++) {
+        if (r->p == p && r->q == q) {
+            r->mult += mult;
             return;
         }
     }
-    roots[nroots].p = p;
-    roots[nroots].q = q;
-    roots[nroots].mult = mult;
+    r->p = p;
+    r->q = q;
+    r->mult = mult;
     nroots++;
 }
 
-/* P(1) or P(-1), or 0 when it doesn't fit */
-static int psum(int sgn, int32_t *out)
+/* P(1) or P(-1), or 0 when it doesn't fit, which filters nothing */
+static int32_t psum(int sgn)
 {
     int32_t t = 0;
     int k;
     for (k = 0; k <= ideg; k++)
         if (__builtin_add_overflow(t, sgn < 0 && (k & 1) ? -ip[k] : ip[k], &t)) return 0;
-    *out = t;
-    return 1;
+    return t;
 }
 
 /* divides ip by (qx - p) when p/q is a root */
 static int try_root(int32_t p, int32_t q)
 {
     static int32_t b[MAXD + 1];
-    int k;
-    if (setjmp(soft_jmp)) {
-        soft = 0;
-        return 0;
-    }
-    soft = 1;
-    b[ideg] = 0;
-    for (k = ideg; k >= 1; k--) {
-        int32_t t = ckadd(ip[k], ckmul(p, b[k]));
-        if (t % q) break;
-        b[k - 1] = t / q;
-    }
-    if (k || ckadd(ip[0], ckmul(p, b[0]))) {
-        soft = 0;
-        return 0;
+    int k, ok = 0;
+    if (!setjmp(soft_jmp)) {
+        soft = 1;
+        b[ideg] = 0;
+        for (k = ideg; k >= 1; k--) {
+            int32_t t = ckadd(ip[k], ckmul(p, b[k]));
+            if (t % q) break;
+            b[k - 1] = t / q;
+        }
+        ok = !k && !ckadd(ip[0], ckmul(p, b[0]));
     }
     soft = 0;
-    for (k = 0; k < ideg; k++) ip[k] = b[k];
-    ideg--;
-    return 1;
+    if (ok) memcpy(ip, b, ideg-- * sizeof *ip);
+    return ok;
 }
 
+/* counts the coprime candidates, then lists them if there are at most 4 */
 static void wcandidates(int n0, int nn)
 {
-    int i, j, count = 0;
-    for (i = 0; i < nn && count <= 4; i++)
-        for (j = 0; j < n0 && count <= 4; j++) count += gcd(dv0[j], dvn[i]) == 1;
-    if (count > 4) {
-        wputs("none of them work");
-        return;
+    int i, j, k, show;
+    for (show = 0; show < 2; show++) {
+        for (k = i = 0; i < nn && k <= 4; i++)
+            for (j = 0; j < n0 && k <= 4; j++) {
+                Q c = { dv0[j], dvn[i] };
+                if (gcd(c.n, c.d) != 1) continue;
+                if (show) say(MORE | OPEN, k ? ", " G_PM "%q" : "none of " G_PM "%q", &c);
+                k++;
+            }
+        if (k > 4) break;
     }
-    wputs("none of ");
-    for (i = 0; i < nn; i++) {
-        for (j = 0; j < n0; j++) {
-            if (gcd(dv0[j], dvn[i]) != 1) continue;
-            if (--count < 0) break;
-            wputs(G_PM);
-            wfrac(dv0[j], dvn[i]);
-            if (count) wputs(", ");
-        }
-    }
-    wputs(" work");
+    wputs(k > 4 ? "none of them work" : " work");
 }
 
 static void find_roots(int v)
 {
-    int i, j, sgn, n0 = 0, nn = 0, found, any = 0, h1, hm;
+    int i, j, sgn, n0 = 0, nn = 0, any = 0, ch = vars[v];
     int32_t p1, pm1, bound;
     if (ideg < 2) return;
-    begin(L_STEP);
-    wputs("rational roots " G_PM "p/q: p|");
-    say(MORE, "%l, q|%l", ip[0] < 0 ? -ip[0] : ip[0], ip[ideg]);
+    say(L_STEP, "rational roots " G_PM "p/q: p|%l, q|%l", ip[0] < 0 ? -ip[0] : ip[0], ip[ideg]);
     while (ideg >= 2) {
-        found = 0;
         n0 = divisors(ip[0], dv0);
         nn = divisors(ip[ideg], dvn);
         if (n0 < 0 || nn < 0) {
@@ -1743,44 +1725,37 @@ static void find_roots(int v)
         }
         /* cheap filters: every root is within the cauchy bound, and p/q a root means (q-p) | P(1), (q+p) | P(-1) */
         for (bound = 1, i = 0; i < ideg; i++) {
-            int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = 1 + (a + ip[ideg] - 1) / ip[ideg];
+            int32_t a = ip[i] < 0 ? -ip[i] : ip[i], c = (a + ip[ideg] - 1) / ip[ideg] + 1;
             if (c > bound) bound = c;
         }
-        h1 = psum(1, &p1);
-        hm = psum(-1, &pm1);
-        for (i = 0; i < nn && !found; i++) {
-            for (j = 0; j < n0 && !found; j++) {
-                if (dv0[j] / dvn[i] > bound || gcd(dv0[j], dvn[i]) != 1) continue;
-                for (sgn = 1; sgn >= -1 && !found; sgn -= 2) {
-                    int32_t p = sgn * dv0[j], q = dvn[i];
-                    if (h1 && (q == p ? p1 != 0 : p1 % (q - p) != 0)) continue;
-                    if (hm && (q == -p ? pm1 != 0 : pm1 % (q + p) != 0)) continue;
+        p1 = psum(1);
+        pm1 = psum(-1);
+        for (i = 0; i < nn; i++) {
+            for (j = 0; j < n0; j++) {
+                int32_t p = dv0[j], q = dvn[i];
+                if (p / q > bound || gcd(p, q) != 1) continue;
+                for (sgn = 0; sgn < 2; sgn++, p = -p) {
+                    Q r = { p, q }, m = { q, 1 }, b = { -p, 1 };
+                    if ((q - p ? p1 % (q - p) : p1) || (q + p ? pm1 % (q + p) : pm1)) continue;
                     poll();
                     if (!try_root(p, q)) continue;
-                    found = any = 1;
+                    any = 1;
                     add_root(p, q, 1);
-                    say(L_STEP | OPEN, "%c=", vars[v]);
-                    wfrac(p, q);
-                    wputs(": P(");
-                    wfrac(p, q);
-                    wputs(")=0, so (");
-                    wlinfactor(p, q, v);
-                    say(MORE, ") is a factor");
-                    say(L_STEP | OPEN, "divide by (");
-                    wlinfactor(p, q, v);
-                    wputs("): ");
+                    say(L_STEP, "%c=%q: P(%q)=0, so (%L) is a factor", ch, &r, &r, &m, ch, &b);
+                    say(L_STEP | OPEN, "divide by (%L): ", &m, ch, &b);
                     wip(v);
                     end();
+                    goto next;
                 }
             }
         }
-        if (!found) break;
+        break;
+    next:;
     }
     if (ideg == 1) {
+        Q m = { ip[1], 1 }, b = { ip[0], 1 };
         add_root(-ip[0], ip[1], 1);
-        say(L_STEP | OPEN, "last factor: ");
-        wlinfactor(-ip[0], ip[1], v);
-        end();
+        say(L_STEP, "last factor: %L", &m, ch, &b);
         ideg = 0;
         ip[0] = 1;
     } else if (!any) {
@@ -1809,22 +1784,22 @@ static int32_t sqpart(int32_t n, int32_t *rest)
 {
     static int32_t last_n = -1, last_s, last_r;
     int32_t s_ = 1, j, n0 = n;
-    if (n == last_n) {
-        *rest = last_r;
-        return last_s;
-    }
-    for (j = 2; j <= n / j; j++) {
-        if (!(j & 4095)) poll();
-        while (n % (j * j) == 0) {
-            n /= j * j;
-            s_ *= j;
+    if (n != last_n) {
+        for (j = 2; j <= n / j; j++) {
+            int32_t jj = j * j;
+            if (!(j & 4095)) poll();
+            while (n % jj == 0) {
+                n /= jj;
+                s_ *= j;
+            }
         }
+        /* cached only once done, since clear can stop poll() midway */
+        last_n = n0;
+        last_s = s_;
+        last_r = n;
     }
-    *rest = n;
-    last_n = n0;
-    last_s = s_;
-    last_r = n;
-    return s_;
+    *rest = last_r;
+    return last_s;
 }
 
 static void wbq(int i, int v)
@@ -1839,33 +1814,39 @@ static void wbq(int i, int v)
     if (bqmult > 1) wputs("^2");
 }
 
+static void swap2(int32_t *a)
+{
+    int32_t t = a[0];
+    a[0] = a[1];
+    a[1] = t;
+}
+
 /* x^4 + ... with only even powers whose x^2-quadratic has rational roots */
 static int biquad(int v)
 {
-    int32_t a = ip[4], b = ip[2], c = ip[0], d, sq;
+    int32_t a, b, d, sq;
     int i;
     Q u;
     if (ideg != 4 || ip[1] || ip[3]) return 0;
-    d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, c)));
+    a = ip[4];
+    b = ip[2];
+    d = ckadd(ckmul(b, b), -ckmul(4, ckmul(a, ip[0])));
     if (d < 0) return 0;
     sq = isqrt(d);
     if (sq * sq != d) return 0;
     say(L_STEP, "only even powers, so treat it as a quadratic in %c^2", vars[v]);
-    for (i = 0; i < 2; i++) {
-        qnorm(&u, ckadd(-b, i ? -sq : sq), ckmul(2, a));
+    a = ckmul(2, a);
+    for (i = 0; i < 2; i++, sq = -sq) {
+        qnorm(&u, ckadd(-b, sq), a);
         bqa[i] = u.n;
         bqb[i] = u.d;
     }
     if (ckmul(bqa[0] < 0 ? -bqa[0] : bqa[0], bqb[1]) > ckmul(bqa[1] < 0 ? -bqa[1] : bqa[1], bqb[0])) {
-        int32_t t = bqa[0];
-        bqa[0] = bqa[1];
-        bqa[1] = t;
-        t = bqb[0];
-        bqb[0] = bqb[1];
-        bqb[1] = t;
+        swap2(bqa);
+        swap2(bqb);
     }
-    nbq = sq ? 2 : 1;
-    bqmult = sq ? 1 : 2;
+    nbq = 1 + !!sq;
+    bqmult = 3 - nbq;
     begin(L_STEP);
     wip(v);
     wputs(" = ");
