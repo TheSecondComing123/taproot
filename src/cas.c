@@ -3877,8 +3877,7 @@ void cas_run(int cmd, const char *input)
 
     for (p = input; *p; p++)
         if (isalpha((unsigned char)*p)) addvar(tolower((unsigned char)*p));
-    for (i = 0; i < nv; i++)
-        if (vars[i] == 'i') iv = i;
+    if ((p = memchr(vars, 'i', nv))) iv = p - vars;
     part[0] = input;
     for (p = input; *p; p++) {
         if (*p == '(') depth++;
