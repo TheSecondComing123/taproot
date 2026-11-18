@@ -2107,7 +2107,7 @@ static void numeric(int fmult)
     R tol, rad, r;
     int k, j, it, mult, cx, nn, n = ideg;
     Cx *zb = z + nz, *ze = zb + n, *zk, *zj;
-    int *mb = zm + nz;
+    int *mb = zm + nz, *mk, *mj;
     for (k = 0; k <= n; k++) rfrac(&c[k], ip[k], ip[n]);
     /* fujiwara bound, 2 max |c[n-k]|^(1/k), rounded up to a power of 2. stp = 2^k: doubling is exact */
     rseti(&rad, 1);
@@ -2164,25 +2164,25 @@ static void numeric(int fmult)
     /* repeated roots come back as a tight cluster: merge it, then polish on the derivative where it's a simple root.
        the last newton step estimates the error */
     nn = 0;
-    for (k = 0; k < n; k++) {
-        if (!mb[k]) continue;
-        sum = zb[k];
+    for (zk = zb, mk = mb; zk < ze; zk++, mk++) {
+        if (!*mk) continue;
+        sum = *zk;
         mult = 1;
-        for (j = k + 1; j < n; j++) {
+        for (zj = zk + 1, mj = mk + 1; zj < ze; zj++, mj++) {
             /* compared in x units, not the scaled y ones */
-            t = zb[j];
-            csubrel(&m, &t, &zb[k]);
+            t = *zj;
+            csubrel(&m, &t, zk);
             cnorm(&m, &t);
             xmul(&m, &m, &rad);
-            cnorm(&tol, &zb[k]);
+            cnorm(&tol, zk);
             xmul(&tol, &tol, &rad);
             rtol(&tol, &tol, -3);
             /* ponytail: 1e-3 catches triple roots in noisy high degrees, but merges distinct irrational roots closer than that */
-            if (!mb[j] || rlt(&tol, &m)) continue;
-            xadd(&sum.r, &sum.r, &zb[j].r);
-            xadd(&sum.i, &sum.i, &zb[j].i);
+            if (!*mj || rlt(&tol, &m)) continue;
+            xadd(&sum.r, &sum.r, &zj->r);
+            xadd(&sum.i, &sum.i, &zj->i);
             mult++;
-            mb[j] = 0;
+            *mj = 0;
         }
         rseti(&m, mult);
         xdiv(&sum.r, &sum.r, &m);
