@@ -2242,14 +2242,14 @@ static void numeric(int fmult)
     for (k = 0; k < nn; k++) {
         if (mb[k] >= 0) continue;
         mb[k] = -mb[k];
-        for (j = 0; j < nn; j++) {
-            if (j == k || !rzero(&zb[j].i) || mb[j] < 2) continue;
-            xsub(&m, &zb[j].r, &zb[k].r);
+        for (zj = zb, mj = mb; zj < zb + nn; zj++, mj++) {
+            if (zj == zb + k || !rzero(&zj->i) || *mj < 2) continue;
+            xsub(&m, &zj->r, &zb[k].r);
             rabs(&m);
             rtol(&tol, &zb[k].r, -2);
             if (rlt(&tol, &m)) continue;
             /* the cluster's polished value is the better one; it just gains the loner's multiplicity */
-            mb[j] += mb[k];
+            *mj += mb[k];
             zb[k] = zb[--nn];
             mb[k--] = mb[nn];
             break;
